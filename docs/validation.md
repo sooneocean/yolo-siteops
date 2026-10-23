@@ -14,8 +14,11 @@ Recorded on 2026-10-23. Credentials, production post identifiers and bodies, ana
 | Production | One operator-approved article write, exact formatting review, explicit browser acceptance, and fresh authenticated/public read-back passed. Reconciliation performed no additional WordPress write. Backup and original apply receipt remain. |
 | Review | Independent security review and outcome verification passed; stale-apply replay was fixed and independently rechecked. |
 | Inventory | `npm run check:release` passed. This heuristic check does not guarantee detection of all secrets or security issues. |
+| Remote CI | [GitHub run 39904345214](https://github.com/sooneocean/yolo-siteops/actions/runs/39904345214) passed checks, Chromium, and disposable WordPress on the release implementation. |
 
 The production result is `verified_transformed`, not a relabelled exact `applied` result. Public REST uses a server-generated cache nonce; the public page retains its canonical URL and refuses redirects. Stale content still fails verification.
+
+A restart of the live workbench preserved proposal, task, experiment, backup, and receipt records without changes.
 
 An observation has started. No complete 28-day result or causal ranking, traffic, CTR, GEO, or ROI result exists yet. HTML text read-back does not evaluate computed CSS visibility. Hashing covers metadata exposed by authenticated REST.
 

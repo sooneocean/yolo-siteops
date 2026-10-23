@@ -1,6 +1,6 @@
 # Release status
 
-The v0.1.0 MVP has completed local engineering and one operator-approved production article acceptance. GitHub publication and remote CI verification are the remaining distribution steps.
+The v0.1.0 MVP has completed local engineering and one operator-approved production article acceptance. Source is public at [sooneocean/yolo-siteops](https://github.com/sooneocean/yolo-siteops). [GitHub CI](https://github.com/sooneocean/yolo-siteops/actions/runs/39904345214) passed checks, Chromium, and the disposable WordPress job on the release implementation.
 
 Validation covers fresh installation, lint, typecheck, build, 140 unit/integration tests, the Chromium journey, real Codex generation, disposable real WordPress apply/public-readback/rollback, and Skill reflection/replay/activation/baseline restoration. See [validation.md](validation.md).
 
