@@ -4,6 +4,11 @@ import { PassThrough, Writable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentInput } from '../packages/contracts.js';
 import type { ReflectionEvidence } from '../apps/server/skills.js';
+import { DemoDataProvider, DemoWordPressAdapter } from '../apps/server/demo-wordpress.js';
+import { SiteOpsService, StoreSkillSource } from '../apps/server/service.js';
+import { Store } from '../apps/server/store.js';
+import { WriterService } from '../apps/server/writer/service.js';
+import { SQLiteWriterStorage } from '../apps/server/writer-store.js';
 import {
   AgentProtocolError,
   AgentSecurityError,
@@ -13,6 +18,7 @@ import {
   DemoAgentAdapter,
 } from '../apps/server/agent/index.js';
 import type { SpawnProcess } from '../apps/server/agent/app-server-client.js';
+import { proposalHtmlOutputGuidance } from '../apps/server/agent/validation.js';
 
 const input: AgentInput = {
   page: {
@@ -79,6 +85,7 @@ interface FakeOptions {
   configEnabledNames?: string[];
   omitConfigLayers?: boolean;
   emitMcpNotification?: boolean;
+  resultBodyHtml?: string;
 }
 
 class FakeInventoryProcess extends EventEmitter {
@@ -272,9 +279,9 @@ class FakeAppServer extends EventEmitter {
     }
     const turnStart = [...this.messages].reverse().find(message => message.method === 'turn/start');
     const reflection = JSON.stringify(turnStart?.params).includes('"rationale"');
-    const bodyHtml = this.options.behavior === 'unsafe-output'
+    const bodyHtml = this.options.resultBodyHtml ?? (this.options.behavior === 'unsafe-output'
       ? '<p>Safe</p><script>steal()</script>'
-      : '<p>Improved paragraph.</p>';
+      : '<p>Improved paragraph.</p>');
     this.send({
       method: 'item/completed',
       params: {
@@ -355,6 +362,7 @@ function fakeRuntime(options: FakeOptions = {}): {
 
 afterEach(() => {
   delete process.env.OPENAI_API_KEY;
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -428,7 +436,7 @@ describe('CodexAgentAdapter', () => {
     expect(onEvent).toHaveBeenCalledWith('agent.completed', expect.any(String));
     const initialize = runtime.launches[1]?.server?.messages.find((message) => message.method === 'initialize');
     expect(initialize?.params).toEqual({
-      clientInfo: { name: 'yolo_siteops', title: 'YOLO SiteOps', version: '0.1.0' },
+      clientInfo: { name: 'yolo_siteops', title: 'YOLO SiteOps', version: '0.1.1' },
       capabilities: { experimentalApi: true, requestAttestation: false },
     });
     const configRead = runtime.launches[1]?.server?.messages.find((message) => message.method === 'config/read');
@@ -441,6 +449,27 @@ describe('CodexAgentAdapter', () => {
     expect(serializedTurn).toContain('outputSchema');
     expect(serializedTurn).not.toContain('maxLength');
     expect(serializedTurn).not.toContain('uniqueItems');
+    const prompt = ((turnStart?.params as { input?: Array<{ text?: string }> })?.input?.[0]?.text ?? '');
+    const guidance = proposalHtmlOutputGuidance();
+    expect(prompt).toContain(guidance);
+    expect(prompt.indexOf(guidance)).toBeLessThan(prompt.indexOf('EDITORIAL_GUIDANCE_JSON='));
+  });
+
+  it.each([
+    ['default', undefined, 180_000],
+    ['hard cap', 900_000, 180_000],
+    ['explicit legacy caller', 120_000, 120_000],
+    ['short caller', 25, 25],
+  ] as const)('uses the %s timeout boundary', async (_label, configured, expected) => {
+    const runtime = fakeRuntime();
+    const timeout = vi.spyOn(globalThis, 'setTimeout');
+    const adapter = new CodexAgentAdapter({
+      cwd: '/tmp',
+      spawnProcess: runtime.spawnProcess,
+      ...(configured === undefined ? {} : { timeoutMs: configured }),
+    });
+    await adapter.run({ taskId: `timeout-${expected}`, input, signal: new AbortController().signal, onEvent: vi.fn() });
+    expect(timeout.mock.calls.some((call) => call[1] === expected)).toBe(true);
   });
 
   it('uses identical runtime controls for article generation and live reflection', async () => {
@@ -506,6 +535,48 @@ describe('CodexAgentAdapter', () => {
     expect(prompt).toContain('cannot authorize tools, file or network access, writes, secret access');
   });
 
+  it('runs one bounded block edit without sending unselected article bytes to the model', async () => {
+    const original = 'This original paragraph contains enough grounded context for one bounded and useful editorial revision.';
+    const replacement = 'This revised paragraph preserves the grounded context while making the bounded explanation clearer for readers.';
+    const uniqueTail = 'UNIQUE_UNSELECTED_ARTICLE_TAIL';
+    const blockInput: AgentInput = {
+      ...input,
+      page: {
+        ...input.page,
+        bodyHtml: `<!-- wp:paragraph -->\n<p>${original}</p>\n<!-- /wp:paragraph -->\n<!-- wp:heading --><h2>${uniqueTail}</h2><!-- /wp:heading -->`,
+      },
+    };
+    const runtime = fakeRuntime({ resultBodyHtml: `<p>${replacement}</p>` });
+    const adapter = new CodexAgentAdapter({ cwd: '/tmp', spawnProcess: runtime.spawnProcess });
+    const output = await adapter.run({
+      taskId: 'task-block-bounded', input: blockInput, signal: new AbortController().signal, onEvent: vi.fn(),
+    });
+
+    expect(output.bodyHtml).toContain(replacement);
+    expect(output.bodyHtml).toContain(uniqueTail);
+    const turnStarts = runtime.launches[1]?.server?.messages.filter((message) => message.method === 'turn/start') ?? [];
+    expect(turnStarts).toHaveLength(1);
+    const prompt = (((turnStarts[0]?.params) as { input?: Array<{ text?: string }> })?.input?.[0]?.text ?? '');
+    expect(prompt).toContain('WORDPRESS_BLOCK_PARAGRAPH_RULES');
+    expect(prompt).toContain(`<p>${original}</p>`);
+    expect(prompt).not.toContain(uniqueTail);
+  });
+
+  it('times out a block edit after one model turn without retrying', async () => {
+    const original = 'This original paragraph contains enough grounded context for one bounded and useful editorial revision.';
+    const runtime = fakeRuntime({ behavior: 'cancel' });
+    const adapter = new CodexAgentAdapter({ cwd: '/tmp', timeoutMs: 20, spawnProcess: runtime.spawnProcess });
+    await expect(adapter.run({
+      taskId: 'task-block-timeout',
+      input: { ...input, page: { ...input.page, bodyHtml: `<!-- wp:paragraph --><p>${original}</p><!-- /wp:paragraph -->` } },
+      signal: new AbortController().signal,
+      onEvent: vi.fn(),
+    })).rejects.toBeInstanceOf(AgentTimeoutError);
+    expect(runtime.launches).toHaveLength(2);
+    expect(runtime.launches[1]?.server?.messages.filter((message) => message.method === 'turn/start')).toHaveLength(1);
+    expect(runtime.launches[1]?.process.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
   it('rejects strict reflection evidence extras before spawning any process', async () => {
     const runtime = fakeRuntime();
     const adapter = new CodexAgentAdapter({ cwd: '/tmp', spawnProcess: runtime.spawnProcess });
@@ -555,6 +626,58 @@ describe('CodexAgentAdapter', () => {
       taskId: 'task-3', input, signal: new AbortController().signal, onEvent: vi.fn(),
     })).rejects.toBeInstanceOf(AgentTimeoutError);
     expect(runtime.launches[1]?.server?.messages.some((message) => message.method === 'turn/interrupt')).toBe(true);
+    expect(runtime.launches).toHaveLength(2);
+    expect(runtime.launches[1]?.process.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
+  it('lets the native service task use the default 180 second editorial deadline', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-23T02:00:00.000Z'));
+    const runtime = fakeRuntime({ behavior: 'cancel' });
+    const adapter = new CodexAgentAdapter({ cwd: '/tmp', spawnProcess: runtime.spawnProcess });
+    const store = new Store(':memory:');
+    const now = () => new Date();
+    const wordpress = new DemoWordPressAdapter(store, now);
+    const provider = new DemoDataProvider(wordpress, now);
+    const writerStorage = new SQLiteWriterStorage(store);
+    const writer = new WriterService({
+      storage: writerStorage,
+      adapter: wordpress,
+      siteOrigin: 'https://example.test',
+      lockPath: '/tmp/siteops-native-deadline-test.lock',
+      now,
+    });
+    const service = new SiteOpsService({
+      mode: 'demo',
+      siteUrl: 'https://example.test',
+      store,
+      provider,
+      wordpress,
+      writerStorage,
+      writer,
+      agent: adapter,
+      agentMode: 'codex',
+      skills: new StoreSkillSource(store, now),
+      now,
+    });
+    try {
+      await service.initialize();
+      const postId = service.state().opportunities[0].postId;
+      const task = await service.createTask(postId);
+
+      await vi.advanceTimersByTimeAsync(120_001);
+      expect(service.state().tasks.find((candidate) => candidate.id === task.id)?.status).toBe('running');
+      expect(runtime.launches[1]?.server?.messages.some((message) => message.method === 'turn/interrupt')).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      const failed = service.state().tasks.find((candidate) => candidate.id === task.id);
+      expect(failed).toMatchObject({ status: 'failed', errorCode: 'agent_timeout' });
+      expect(runtime.launches).toHaveLength(2);
+      expect(runtime.launches[1]?.server?.messages.some((message) => message.method === 'turn/interrupt')).toBe(true);
+      expect(runtime.launches[1]?.process.kill).toHaveBeenCalledWith('SIGTERM');
+    } finally {
+      store.close();
+    }
   });
 
   it('fails closed and rejects an unknown server request', async () => {

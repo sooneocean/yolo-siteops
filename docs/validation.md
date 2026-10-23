@@ -1,6 +1,8 @@
-# Validation record — v0.1.0 MVP
+# Validation record — v0.1.1
 
 Recorded on 2026-10-23. Credentials, production post identifiers and bodies, analytics data, session material, SQLite files, and raw model output are excluded from this repository.
+
+## v0.1.0 baseline
 
 | Layer | Evidence and scope |
 | --- | --- |
@@ -23,3 +25,13 @@ A restart of the live workbench preserved proposal, task, experiment, backup, an
 An observation has started. No complete 28-day result or causal ranking, traffic, CTR, GEO, or ROI result exists yet. HTML text read-back does not evaluate computed CSS visibility. Hashing covers metadata exposed by authenticated REST.
 
 Real Codex checks require a local operator login. Production acceptance requires human approval. Neither runs in pull-request CI.
+
+## v0.1.1 proposal-generation repair
+
+The repair passed local lint, typecheck, build, 194 tests across 15 files, the guarded browser journey, and the source inventory check. Synthetic 67-block cases cover bounded paragraph editing, malformed input, unsafe input, immutable surrounding markup and one-call execution. A native service regression verifies the 180-second editorial deadline while explicit shorter callers retain their limits.
+
+Two real editorial tasks produced new pending proposals without approval or WordPress writes. The block article retained every delimiter and all content outside the selected text span. Historical failed records were preserved because their original exception categories were not stored; current reproduction results do not establish those historical causes.
+
+An initial operator verification recorded `review_required` after an incomplete read-back. That record remains unchanged. Subsequent separate read-only checks verified all three guarded WordPress hashes and unchanged existing proposals, backups and receipts. No model or mutation was replayed to complete those checks. This validates the recorded proposal-only workflow, not production publication or traffic impact.
+
+Independent outcome verification confirmed the local artifacts, SQLite state, byte-preservation contract and new-path regressions, rerunning 63 targeted tests and typecheck without network, model calls or WordPress writes. It did not independently repeat the remote read-backs or the complete browser journey.

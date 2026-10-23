@@ -9,7 +9,24 @@ export interface AnalyticsRow { postId: number; sessions: number; engagedSession
 export interface Snapshot { id: string; createdAt: string; mode: Mode; evidence: Evidence[]; pages: PageRecord[]; search: SearchRow[]; pageMetrics?: SearchPageRow[]; analytics: AnalyticsRow[]; warnings: string[]; }
 export interface Opportunity { id: string; postId: number; title: string; url: string; kind: 'decay' | 'position'; clicks: number; previousClicks: number; impressions: number; position: number; queries: string[]; evidenceIds: string[]; quality: 'available' | 'unknown'; engagementRate?: number; reason: string; audienceHypothesis: string; keywordHypotheses: string[]; }
 export type TaskStatus = 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled' | 'review_required';
-export interface Task { id: string; postId: number; title: string; status: TaskStatus; stage: string; createdAt: string; updatedAt: string; skillVersion: string; snapshotId: string; error?: string; proposalId?: string; }
+export type TaskFailureCode =
+  | 'output_schema'
+  | 'skill_version_mismatch'
+  | 'duplicate_evidence'
+  | 'ungrounded_evidence'
+  | 'html_policy'
+  | 'summary_policy'
+  | 'block_structure'
+  | 'block_preservation'
+  | 'agent_timeout'
+  | 'agent_protocol'
+  | 'agent_security'
+  | 'agent_turn'
+  | 'task_input_stale'
+  | 'wordpress_state_drift'
+  | 'task_reservation_expired'
+  | 'internal_error';
+export interface Task { id: string; postId: number; title: string; status: TaskStatus; stage: string; createdAt: string; updatedAt: string; skillVersion: string; snapshotId: string; error?: string; errorCode?: TaskFailureCode; proposalId?: string; }
 export interface TaskEvent { sequence: number; taskId: string; at: string; type: string; message: string; }
 export interface ChangeProposal { id: string; taskId: string; postId: number; title: string; url: string; beforeHtml: string; afterHtml: string; summary: string; evidenceIds: string[]; baseHash: string; patchHash: string; status: 'pending' | 'approved' | 'rejected' | 'applied' | 'rolled_back' | 'review_required' | 'verified_transformed'; createdAt: string; appliedAt?: string; afterHash?: string; error?: string; originalReviewReason?: string; originalApplyReceiptId?: string; originalPatchHash?: string; reconciliationTransform?: 'strip_bare_p_v1'; reconciledAt?: string; reviewedActualHash?: string; }
 export interface ReconciliationReview { id: string; proposalId: string; postId: number; sessionId: string; baseHash: string; originalPatchHash: string; originalApplyReceiptId: string; originalReviewReason: string; reviewedActualHash: string; actualBodyHtml: string; transform: 'strip_bare_p_v1'; createdAt: string; }

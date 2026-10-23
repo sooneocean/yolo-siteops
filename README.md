@@ -4,7 +4,7 @@ YOLO SiteOps 是一個 local-first 的 WordPress 營運工作台：先讀取證�
 
 ## 目前狀態
 
-v0.1.0 MVP 已通過乾淨安裝、140 項測試、Chromium 操作流程、真實 Codex 與隔離 WordPress 寫入／回復，以及 Skill 反思與回放驗證。另完成一篇經人工核准的正式 WordPress 驗收，包含站端段落格式轉換的獨立接受紀錄。已驗證的 Codex CLI 為 `0.163.0`。
+v0.1.1 修復提案錯誤分類、Gutenberg 段落保留與編輯任務逾時，通過 194 項測試及 Chromium 操作流程。兩篇真實文章已生成待核准提案，未新增正式寫入。v0.1.0 的乾淨安裝、真實 Codex、隔離 WordPress 寫入／回復、Skill 回放及單篇人工核准正式驗收紀錄仍保留。已驗證的 Codex CLI 為 `0.163.0`。
 
 驗證範圍與限制見 [`docs/validation.md`](docs/validation.md)。這些結果證明已記錄的 MVP 操作流程；排名、流量、CTR、GEO 與 ROI 仍須後續量測。
 

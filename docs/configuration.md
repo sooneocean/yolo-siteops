@@ -23,3 +23,7 @@ The fixture defaults to the local `desktop-linux` Docker context. On a local Lin
 The Google key must be an absolute path to a regular private file (POSIX permissions such as `0600`). Symlinks and files accessible to group/other users are rejected. SiteOps never changes permissions on existing credential files.
 
 Run one SiteOps server per data directory. Use separate data directories for development, E2E, and live operation. A failed or interrupted scheduled run is durably recorded and is not automatically retried. Each tick catches up only the latest due daily/weekly job.
+
+The native editorial adapter defaults to a 180-second maximum per generation. Explicit shorter adapter deadlines remain effective; the reflection and smoke callers retain their 120-second limits. There is no automatic generation retry. Inspect the task's safe failure code before deciding whether to create a new task.
+
+For serialized Gutenberg articles, the MVP changes only one supported top-level plain paragraph while preserving the surrounding block bytes. It does not regenerate an entire block document. If no supported paragraph exists, the task stops without a model call. All proposals still require individual human approval before WordPress writes.

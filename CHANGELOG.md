@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1 — 2026-10-23
+
+- Add closed, safe proposal failure codes and actionable task messages without exposing raw model output or exception details.
+- Derive canonical output guidance from the existing HTML policy without relaxing validation.
+- Edit one eligible Gutenberg paragraph while preserving every block delimiter and all surrounding content exactly; reject malformed, unsafe, or unsupported input.
+- Extend the native editorial deadline to 180 seconds while preserving explicit shorter limits, cancellation, and single-call execution.
+- Expand coverage to 194 tests, including synthetic 67-block preservation cases and deadline regressions.
+- Verify two new real editorial proposals remain pending approval, with no additional WordPress writes. Historical failures remain unchanged because their original exception categories were not recorded.
+
 ## 0.1.0 — 2026-10-23
 
 - Local React operations workbench with task progress, demand review, article approval, and outcome tracking.

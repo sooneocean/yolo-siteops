@@ -1,5 +1,9 @@
 # Release status
 
+The v0.1.1 patch adds safe proposal diagnostics, policy-derived output guidance, bounded Gutenberg paragraph editing, and a 180-second native editorial deadline. Local lint, typecheck, build, 194 tests across 15 files, the Chromium journey, source inventory, independent security review and outcome verification passed. Two real editorial proposals remain pending human approval; this patch performed no additional production WordPress writes. Historical failed records remain unchanged. See [validation.md](validation.md) for the read-only reconciliation evidence and its limits.
+
+## v0.1.0 baseline
+
 The v0.1.0 MVP has completed local engineering and one operator-approved production article acceptance. Source is public at [sooneocean/yolo-siteops](https://github.com/sooneocean/yolo-siteops). [GitHub CI](https://github.com/sooneocean/yolo-siteops/actions/runs/39904345214) passed checks, Chromium, and the disposable WordPress job on the release implementation.
 
 Validation covers fresh installation, lint, typecheck, build, 140 unit/integration tests, the Chromium journey, real Codex generation, disposable real WordPress apply/public-readback/rollback, and Skill reflection/replay/activation/baseline restoration. See [validation.md](validation.md).

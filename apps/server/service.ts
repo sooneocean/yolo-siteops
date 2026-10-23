@@ -1,8 +1,16 @@
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import type {
-  AgentAdapter, AppState, ChangeProposal, Connection, Experiment, Settings, SkillVersion, Snapshot, Task, TaskEvent,
+  AgentAdapter, AppState, ChangeProposal, Connection, Experiment, Settings, SkillVersion, Snapshot, Task, TaskEvent, TaskFailureCode,
 } from '../../packages/contracts.js';
+import {
+  AgentBlockError,
+  AgentOutputError,
+  AgentProtocolError,
+  AgentSecurityError,
+  AgentTimeoutError,
+  AgentTurnError,
+} from './agent/index.js';
 import type { DataProvider } from './data/provider.js';
 import { rankOpportunities } from './opportunities.js';
 import { assertSafeProposalHtml } from './security/html.js';
@@ -105,7 +113,7 @@ export class SiteOpsService {
     }
     for (const task of this.options.store.list<Task>('task')) {
       if (task.status === 'queued' || task.status === 'running') {
-        this.saveTask({ ...task, status: 'failed', stage: 'Interrupted by server restart', updatedAt: this.now().toISOString(), error: 'The task was interrupted before a durable result.' });
+        this.saveTask({ ...task, status: 'failed', stage: 'Interrupted by server restart', updatedAt: this.now().toISOString(), error: 'The task was interrupted before a durable result.', errorCode: 'internal_error' });
         this.emitEvent(task.id, 'task.interrupted', 'Task was interrupted by server restart and was not resumed.');
       }
     }
@@ -187,7 +195,7 @@ export class SiteOpsService {
     if (task.status === 'waiting_approval' && task.proposalId) {
       await this.options.writer.reject({ proposalId: task.proposalId, reason: 'Task cancelled by operator' });
     }
-    const cancelled = { ...task, status: 'cancelled' as const, stage: 'Cancelled by operator', updatedAt: this.now().toISOString() };
+    const cancelled = { ...task, status: 'cancelled' as const, stage: 'Cancelled by operator', updatedAt: this.now().toISOString(), error: undefined, errorCode: undefined };
     this.saveTask(cancelled);
     this.emitEvent(taskId, 'task.cancelled', 'Task cancellation accepted.');
     return cancelled;
@@ -395,6 +403,7 @@ export class SiteOpsService {
         stage: cancelled ? 'Cancelled by operator' : 'Proposal generation failed',
         updatedAt: this.now().toISOString(),
         error: cancelled ? undefined : 'Task execution failed without producing a proposal.',
+        errorCode: cancelled ? undefined : taskFailureCodeFor(error),
       };
       this.saveTask(failed);
       this.emitEvent(task.id, cancelled ? 'task.cancelled' : 'task.failed', cancelled ? 'Task cancelled.' : 'Task failed without a durable proposal.');
@@ -500,5 +509,24 @@ export function httpStatusFor(error: unknown): number {
 
 export function errorCodeFor(error: unknown): string {
   if (error instanceof SiteOpsError || error instanceof WriterServiceError) return error.code;
+  return 'internal_error';
+}
+
+const taskSiteOpsFailureCodes = new Set<TaskFailureCode>([
+  'task_input_stale',
+  'wordpress_state_drift',
+  'task_reservation_expired',
+]);
+
+export function taskFailureCodeFor(error: unknown): TaskFailureCode {
+  if (error instanceof AgentOutputError) return error.code;
+  if (error instanceof AgentBlockError) return error.code;
+  if (error instanceof AgentSecurityError) return 'agent_security';
+  if (error instanceof AgentTurnError) return 'agent_turn';
+  if (error instanceof AgentProtocolError) return 'agent_protocol';
+  if (error instanceof AgentTimeoutError) return 'agent_timeout';
+  if (error instanceof SiteOpsError && taskSiteOpsFailureCodes.has(error.code as TaskFailureCode)) {
+    return error.code as TaskFailureCode;
+  }
   return 'internal_error';
 }

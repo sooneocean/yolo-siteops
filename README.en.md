@@ -4,7 +4,7 @@ YOLO SiteOps is a local-first WordPress operations workbench. It reads evidence,
 
 ## Status
 
-The v0.1.0 MVP has passed fresh installation, 140 tests, the Chromium journey, real Codex plus disposable WordPress apply/restore, and Skill reflection/replay checks. One human-approved production article acceptance also passed, including a separate acceptance record for server-side paragraph formatting. The verified Codex CLI is `0.163.0`.
+v0.1.1 repairs proposal diagnostics, Gutenberg paragraph preservation, and editorial deadlines, with 194 tests and the Chromium journey passing locally. Two real articles produced pending proposals without new production writes. The v0.1.0 records for fresh installation, real Codex, disposable WordPress apply/restore, Skill replay, and one human-approved production acceptance remain available. The verified Codex CLI is `0.163.0`.
 
 See [`docs/validation.md`](docs/validation.md) for scope and limitations. These results prove the recorded MVP workflows; ranking, traffic, CTR, GEO, and ROI outcomes require later measurement.
 

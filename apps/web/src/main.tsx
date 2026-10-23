@@ -13,6 +13,7 @@ import type {
   Task,
   TaskEvent,
 } from '../../../packages/contracts';
+import { taskFailureMessage } from '../../../packages/task-errors';
 import './styles.css';
 
 type TabId = 'today' | 'radar' | 'review' | 'impact';
@@ -492,7 +493,7 @@ function MetricCard({ label, value, note, tone, icon }: { label: string; value: 
 function TaskTimeline({ tasks, events, onCancel, busy }: { tasks: Task[]; events: Record<string, TaskEvent[]>; onCancel: (task: Task) => void; busy: Record<string, boolean> }) {
   const ordered = [...tasks].sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
   if (!ordered.length) return <EmptyState title="還沒有任務事件" body="在需求雷達建立審閱任務後，即時進度會顯示在這裡。" />;
-  return <div className="timeline">{ordered.map((task) => <div className="timeline-item" key={task.id}><div className={`timeline-node timeline-node--${statusTone(task.status)}`}><span /></div><div className="timeline-content"><div className="timeline-top"><div><strong>{task.title}</strong><span className="timeline-id">#{task.id.slice(0, 8)}</span></div><StatusPill status={task.status} /></div><p className="timeline-stage">{task.stage}</p><div className="timeline-meta"><span>更新於 {formatDate(task.updatedAt)}</span><span>Skill {task.skillVersion}</span><span>資料快照 {task.snapshotId.slice(0, 10)}</span>{['queued', 'running', 'waiting_approval'].includes(task.status) && <button className="text-button text-button--danger" onClick={() => onCancel(task)} disabled={busy[`cancel-${task.id}`]}>{busy[`cancel-${task.id}`] ? '取消中…' : '取消任務'}</button>}</div>{events[task.id]?.length ? <div className="event-list">{events[task.id].map((event) => <div className="event-row" key={`${task.id}-${event.sequence}`}><span>{formatDate(event.at)}</span><strong>{event.message}</strong></div>)}</div> : <div className="event-pending">等待即時進度…</div>}</div></div>)}</div>;
+  return <div className="timeline">{ordered.map((task) => <div className="timeline-item" key={task.id}><div className={`timeline-node timeline-node--${statusTone(task.status)}`}><span /></div><div className="timeline-content"><div className="timeline-top"><div><strong>{task.title}</strong><span className="timeline-id">#{task.id.slice(0, 8)}</span></div><StatusPill status={task.status} /></div><p className="timeline-stage">{task.stage}</p>{task.status === 'failed' && <p className="text-danger">{taskFailureMessage(task.errorCode)}</p>}<div className="timeline-meta"><span>更新於 {formatDate(task.updatedAt)}</span><span>Skill {task.skillVersion}</span><span>資料快照 {task.snapshotId.slice(0, 10)}</span>{['queued', 'running', 'waiting_approval'].includes(task.status) && <button className="text-button text-button--danger" onClick={() => onCancel(task)} disabled={busy[`cancel-${task.id}`]}>{busy[`cancel-${task.id}`] ? '取消中…' : '取消任務'}</button>}</div>{events[task.id]?.length ? <div className="event-list">{events[task.id].map((event) => <div className="event-row" key={`${task.id}-${event.sequence}`}><span>{formatDate(event.at)}</span><strong>{event.message}</strong></div>)}</div> : <div className="event-pending">等待即時進度…</div>}</div></div>)}</div>;
 }
 
 function RadarView({ state, busy, onCreateTask }: { state: AppState; busy: Record<string, boolean>; onCreateTask: (opportunity: Opportunity) => void }) {

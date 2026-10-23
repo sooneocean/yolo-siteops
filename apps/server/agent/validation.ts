@@ -1,7 +1,7 @@
 import sanitizeHtml from 'sanitize-html';
 import { z } from 'zod';
 import type { AgentInput, AgentResult } from '../../../packages/contracts.js';
-import { AgentSecurityError } from './errors.js';
+import { AgentOutputError, AgentSecurityError } from './errors.js';
 
 export interface ReflectionEvidenceInput {
   active: { id: string; content: string };
@@ -117,6 +117,29 @@ const htmlPolicy: sanitizeHtml.IOptions = {
   enforceHtmlBoundary: true,
 };
 
+export function proposalHtmlOutputGuidance(): string {
+  const allowedTags = Array.isArray(htmlPolicy.allowedTags) ? htmlPolicy.allowedTags : [];
+  const tags = allowedTags.map((tag) => `<${tag}>`).join(', ');
+  const attributes = htmlPolicy.allowedAttributes === false
+    ? 'none'
+    : Object.entries(htmlPolicy.allowedAttributes ?? {}).map(([tag, values]) => {
+        const names = values.map((value) => typeof value === 'string' ? value : value.name);
+        return `<${tag}>: ${names.join(', ')}`;
+      }).join('; ');
+  const schemes = Array.isArray(htmlPolicy.allowedSchemes) ? htmlPolicy.allowedSchemes.join(', ') : 'none';
+  return [
+    'PROPOSAL_HTML_OUTPUT_RULES (trusted application policy):',
+    `Allowed elements: ${tags}.`,
+    `Allowed attributes by element: ${attributes}. All other attributes, including id, class, and style, are forbidden.`,
+    `Allowed URL schemes: ${schemes}.`,
+    'Return sanitizer-canonical HTML: use double-quoted attributes; encode &, <, and > in text and attribute values as HTML entities; and serialize void elements as <br /> and <img ... />.',
+    'HTML comments and the <embed> element are forbidden.',
+    'The summary must be plain text and should avoid the characters <, >, and &.',
+    'An allowed element is available when needed; it is not a request to add that element.',
+    'Do not add URLs, images, or factual claims that are not supported by the supplied snapshot and evidence.',
+  ].join('\n');
+}
+
 export function parseAgentInput(input: AgentInput): AgentInput {
   const parsed = agentInputSchema.parse(input);
   if (parsed.page.postId !== parsed.opportunity.postId) {
@@ -140,24 +163,32 @@ export function allowedEvidenceIds(input: AgentInput): string[] {
 }
 
 export function validateAgentResult(value: unknown, input: AgentInput): AgentResult {
-  const result = agentResultSchema.parse(value);
+  let result: AgentResult;
+  try {
+    result = agentResultSchema.parse(value);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new AgentOutputError('output_schema', 'Agent output did not match the required schema');
+    }
+    throw error;
+  }
   if (result.skillVersion !== input.skillVersion) {
-    throw new AgentSecurityError('Agent changed the pinned skill version');
+    throw new AgentOutputError('skill_version_mismatch', 'Agent changed the pinned skill version');
   }
   const allowedIds = new Set(allowedEvidenceIds(input));
   if (new Set(result.evidenceIds).size !== result.evidenceIds.length) {
-    throw new AgentSecurityError('Agent returned duplicate evidence IDs');
+    throw new AgentOutputError('duplicate_evidence', 'Agent returned duplicate evidence IDs');
   }
   for (const id of result.evidenceIds) {
     if (!allowedIds.has(id)) {
-      throw new AgentSecurityError('Agent cited evidence outside the approved opportunity snapshot');
+      throw new AgentOutputError('ungrounded_evidence', 'Agent cited evidence outside the approved opportunity snapshot');
     }
   }
   if (sanitizeHtml(result.bodyHtml, htmlPolicy) !== result.bodyHtml) {
-    throw new AgentSecurityError('Agent returned HTML outside the proposal safety policy');
+    throw new AgentOutputError('html_policy', 'Agent returned HTML outside the proposal safety policy');
   }
   if (sanitizeHtml(result.summary, { allowedTags: [], allowedAttributes: {} }) !== result.summary) {
-    throw new AgentSecurityError('Agent summary must be plain text');
+    throw new AgentOutputError('summary_policy', 'Agent summary must be plain text');
   }
   return result;
 }

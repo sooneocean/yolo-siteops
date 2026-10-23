@@ -15,6 +15,10 @@ The session bootstrap is `POST /api/session`; other API routes require the HttpO
 
 The Codex adapter starts the installed CLI app-server over stdio. Its preflight disables network search, apps, plugins, MCP, shell inheritance, and unrelated features; the adapter accepts only the structured proposal result. It uses the installed login and default model, with no model override.
 
+Classic HTML proposals use the existing strict canonical HTML validator. Its output-format instructions come from the same policy as validation. Serialized WordPress block content uses a separate bounded path: validate full-body safety and delimiter structure, select the first supported top-level plain core paragraph, generate only its text, and splice that text into the original body. Block delimiters, attributes, custom blocks and all other bytes remain unchanged. Unsupported or malformed block content fails before a model call. The generated paragraph still passes strict validation, and the merged body passes the unchanged preview/writer safety checks. No full-body normalization is performed.
+
+Editorial generation has a maximum 180-second deadline with no automatic retry. Callers that explicitly use a shorter deadline, including reflection and smoke checks, keep that deadline. Failed tasks record a closed failure code and display a fixed message; raw model output, exception messages and validation issues are not persisted as diagnostics. Older generic failures are not assigned guessed causes.
+
 ## SQLite storage
 
 SQLite is created under the configured data directory with mode `0700`, WAL journaling, a busy timeout, and one schema version. Records are JSON values keyed by kind and id. It stores snapshots, tasks, events, proposals, approvals, backups, receipts, settings, skills, and experiments. Live private WordPress snapshots stay in the local store and are never documentation fixtures.
