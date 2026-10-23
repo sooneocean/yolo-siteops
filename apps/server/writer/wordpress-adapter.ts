@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { PublicReadback, WordPressAdapter, WordPressPostSnapshot } from './types.js';
 import { UnknownWordPressWriteError } from './types.js';
 import { extractCanonicalHref, normalizeHtmlText, normalizePublicPageText } from '../security/html.js';
@@ -111,9 +112,10 @@ export class HttpWordPressAdapter implements WordPressAdapter {
 
   async checkPublicReadback(post: WordPressPostSnapshot): Promise<PublicReadback> {
     const publicPostUrl = this.sameOriginUrl(post.url);
-    const url = this.apiUrl(post.postId, 'view');
+    const url = this.publicRestVerificationUrl(this.apiUrl(post.postId, 'view'));
     const response = await this.fetchImpl(url, {
-      method: 'GET', redirect: 'manual', headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(READ_TIMEOUT_MS),
+      method: 'GET', redirect: 'manual', headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+      signal: AbortSignal.timeout(READ_TIMEOUT_MS),
     });
     this.assertNoRedirect(response);
     if (response.status === 200) {
@@ -126,7 +128,8 @@ export class HttpWordPressAdapter implements WordPressAdapter {
       if (renderedText !== expectedText) throw new Error('WordPress public REST text did not match the authenticated body');
 
       const pageResponse = await this.fetchImpl(publicPostUrl, {
-        method: 'GET', redirect: 'manual', headers: { Accept: 'text/html' }, signal: AbortSignal.timeout(READ_TIMEOUT_MS),
+        method: 'GET', redirect: 'manual', headers: { Accept: 'text/html', 'Cache-Control': 'no-cache' },
+        signal: AbortSignal.timeout(READ_TIMEOUT_MS),
       });
       this.assertNoRedirect(pageResponse);
       if (pageResponse.status !== 200) throw new Error(`WordPress public page read failed with HTTP ${pageResponse.status}`);
@@ -170,6 +173,12 @@ export class HttpWordPressAdapter implements WordPressAdapter {
     if (url.protocol !== 'https:' || url.origin !== this.origin.origin || url.username || url.password) {
       throw new Error('WordPress returned a URL outside the configured HTTPS site origin');
     }
+    return url;
+  }
+
+  private publicRestVerificationUrl(value: URL): URL {
+    const url = new URL(value.href);
+    url.searchParams.append('_siteops_verify', crypto.randomUUID());
     return url;
   }
 

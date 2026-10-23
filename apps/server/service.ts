@@ -10,7 +10,8 @@ import { Store } from './store.js';
 import { nextSearchDate, observeExperiment } from './experiments.js';
 import { hashPostState } from './writer/hash.js';
 import { WriterService, WriterServiceError } from './writer/service.js';
-import type { WordPressAdapter, WriterReceipt } from './writer/types.js';
+import type { ReconciliationAcceptance, WordPressAdapter, WriterReceipt } from './writer/types.js';
+import type { ReconciliationReview } from '../../packages/contracts.js';
 import { SQLiteWriterStorage } from './writer-store.js';
 
 const SETTINGS_ID = 'current';
@@ -100,6 +101,7 @@ export class SiteOpsService {
     this.options.writerStorage.reconcileConsumedApprovals();
     for (const proposal of this.options.writerStorage.listProposals()) {
       if (proposal.status === 'review_required') this.finishProposalTask(proposal, 'review_required', proposal.error ?? 'Write outcome requires manual review.');
+      if (proposal.status === 'verified_transformed') await this.repairReconciliation(proposal);
     }
     for (const task of this.options.store.list<Task>('task')) {
       if (task.status === 'queued' || task.status === 'running') {
@@ -209,15 +211,34 @@ export class SiteOpsService {
   }
 
   async applyProposal(proposalId: string, sessionId: string, approvalId: string): Promise<WriterReceipt> {
+    const before = await this.requireProposal(proposalId);
     const receipt = await this.options.writer.apply({ proposalId, sessionId, approvalId });
     const proposal = await this.requireProposal(proposalId);
-    if (receipt.status === 'applied') {
+    if (proposal.status === 'verified_transformed' || proposal.status === before.status) return receipt;
+    if (receipt.status === 'applied' && proposal.status === 'applied') {
       this.createExperiment(proposal);
       this.finishProposalTask(proposal, 'completed', 'WordPress write verified; technical task completed.');
-    } else {
+    } else if (receipt.status === 'review_required' && proposal.status === 'review_required') {
       this.finishProposalTask(proposal, 'review_required', 'Write outcome requires manual review.');
       this.confoundExperiment(proposalId, 'Write outcome is unknown.');
+    } else {
+      throw new SiteOpsError('apply_state_conflict', 'Apply receipt does not match the current proposal state.', 409);
     }
+    return receipt;
+  }
+
+  async prepareReconciliation(proposalId: string, sessionId: string): Promise<ReconciliationReview> {
+    return this.options.writer.prepareReconciliation({ proposalId, sessionId });
+  }
+
+  async acceptReconciliation(proposalId: string, sessionId: string, reviewId: string, reviewedActualHash: string): Promise<ReconciliationAcceptance> {
+    return this.options.writer.acceptReconciliation({ proposalId, sessionId, reviewId, reviewedActualHash });
+  }
+
+  async reconcileProposal(proposalId: string, sessionId: string, acceptanceId: string): Promise<WriterReceipt> {
+    const receipt = await this.options.writer.reconcile({ proposalId, sessionId, acceptanceId });
+    const proposal = await this.requireProposal(proposalId);
+    await this.repairReconciliation(proposal);
     return receipt;
   }
 
@@ -383,26 +404,56 @@ export class SiteOpsService {
   }
 
   private createExperiment(proposal: ChangeProposal): void {
-    if (this.options.store.get<Experiment>('experiment', proposal.id)) return;
     const task = this.options.store.get<Task>('task', proposal.taskId);
     const snapshot = task ? this.options.store.get<Snapshot>('snapshot', task.snapshotId) : undefined;
     const pageMetrics = snapshot?.pageMetrics?.find((row) => row.postId === proposal.postId);
     const baselineClicks = pageMetrics?.clicks ?? snapshot?.search.filter((row) => row.postId === proposal.postId).reduce((sum, row) => sum + row.clicks, 0) ?? 0;
     const baselineSessions = snapshot?.analytics.find((row) => row.postId === proposal.postId)?.sessions;
-    const start = this.now();
+    const start = proposal.reconciledAt ? new Date(proposal.reconciledAt) : this.now();
     const startDate = nextSearchDate(start);
     const baselineEvidence = snapshot?.evidence.find(item => item.id === pageMetrics?.evidenceId);
+    const experiment: Experiment = {
+      id: `experiment:${proposal.id}`, proposalId: proposal.id, postId: proposal.postId,
+      startDate, dueDate: new Date(Date.parse(`${startDate}T00:00:00Z`) + 27 * 86400000).toISOString().slice(0, 10),
+      status: 'observing', baselineClicks, ...(baselineSessions === undefined ? {} : { baselineSessions }),
+      ...(baselineEvidence ? { baselineEvidence } : {}), expectedPostHash: proposal.afterHash ?? proposal.patchHash,
+      note: proposal.status === 'verified_transformed'
+        ? 'The accepted WordPress formatting transformation was verified without another write; impact requires a complete observation window.'
+        : 'Technical write verification passed; impact requires a complete observation window.',
+    };
+    const existing = this.options.store.get<Experiment>('experiment', proposal.id);
+    if (existing) {
+      const incompatible = existing.id !== experiment.id || existing.proposalId !== experiment.proposalId
+        || existing.postId !== experiment.postId || existing.startDate !== experiment.startDate
+        || existing.dueDate !== experiment.dueDate || existing.baselineClicks !== experiment.baselineClicks
+        || existing.baselineSessions !== experiment.baselineSessions || existing.expectedPostHash !== experiment.expectedPostHash
+        || JSON.stringify(existing.baselineEvidence) !== JSON.stringify(experiment.baselineEvidence);
+      if (incompatible) {
+        throw new SiteOpsError('experiment_repair_conflict', 'Existing experiment conflicts with the immutable proposal reconciliation receipt.', 500);
+      }
+      return;
+    }
     for (const other of this.options.store.list<Experiment>('experiment')) {
       if (other.postId === proposal.postId && ['observing', 'insufficient'].includes(other.status)) this.confoundExperiment(other.proposalId, '觀察期間套用了另一個提案。');
     }
-    const experiment: Experiment = {
-      id: crypto.randomUUID(), proposalId: proposal.id, postId: proposal.postId,
-      startDate, dueDate: new Date(Date.parse(`${startDate}T00:00:00Z`) + 27 * 86400000).toISOString().slice(0, 10),
-      status: 'observing', baselineClicks, ...(baselineSessions === undefined ? {} : { baselineSessions }),
-      ...(baselineEvidence ? { baselineEvidence } : {}), expectedPostHash: proposal.patchHash,
-      note: 'Technical write verification passed; impact requires a complete observation window.',
-    };
     this.options.store.put('experiment', proposal.id, experiment);
+  }
+
+  private async repairReconciliation(proposal: ChangeProposal): Promise<void> {
+    const receipt = await this.options.writerStorage.getReceipt('reconcile', proposal.id);
+    if (!receipt || receipt.status !== 'verified_transformed' || receipt.proposalId !== proposal.id
+      || receipt.afterHash !== proposal.afterHash || receipt.createdAt !== proposal.reconciledAt) {
+      throw new SiteOpsError('reconciliation_repair_conflict', 'Verified transformation is missing its immutable reconciliation receipt.', 500);
+    }
+    const task = this.options.store.get<Task>('task', proposal.taskId);
+    const snapshot = task ? this.options.store.get<Snapshot>('snapshot', task.snapshotId) : undefined;
+    if (!task || task.postId !== proposal.postId || task.proposalId !== proposal.id || !snapshot) {
+      throw new SiteOpsError('reconciliation_repair_conflict', 'Verified transformation cannot be matched to its immutable task snapshot.', 500);
+    }
+    if (task.status !== 'completed' || task.stage !== 'WordPress format transformation accepted' || task.error) {
+      this.saveTask({ ...task, status: 'completed', stage: 'WordPress format transformation accepted', updatedAt: proposal.reconciledAt ?? receipt.createdAt, error: undefined });
+    }
+    this.createExperiment(proposal);
   }
 
   private confoundExperiment(proposalId: string, note: string): void {

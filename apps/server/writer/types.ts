@@ -1,4 +1,4 @@
-import type { ChangeProposal } from '../../../packages/contracts.js';
+import type { ChangeProposal, ReconciliationReview } from '../../../packages/contracts.js';
 
 export type ApprovalKind = 'apply' | 'rollback';
 
@@ -50,14 +50,36 @@ export interface PublicReadback {
 export interface WriterReceipt {
   id: string;
   sessionId: string;
-  operation: 'apply' | 'rollback';
+  operation: 'apply' | 'rollback' | 'reconcile';
   proposalId: string;
   postId: number;
-  status: 'applied' | 'rolled_back' | 'review_required';
+  status: 'applied' | 'rolled_back' | 'review_required' | 'verified_transformed';
   beforeHash: string;
   afterHash?: string;
   createdAt: string;
   message?: string;
+}
+
+export interface ReconciliationAcceptance {
+  id: string;
+  proposalId: string;
+  postId: number;
+  sessionId: string;
+  baseHash: string;
+  originalPatchHash: string;
+  originalApplyReceiptId: string;
+  originalReviewReason: string;
+  reviewedActualHash: string;
+  transform: 'strip_bare_p_v1';
+  createdAt: string;
+  expiresAt: string;
+  consumedAt?: string;
+}
+
+export interface FinalizeReconciliationInput {
+  acceptance: ReconciliationAcceptance;
+  receipt: WriterReceipt;
+  reconciledAt: string;
 }
 
 export interface WriterStorage {
@@ -72,6 +94,11 @@ export interface WriterStorage {
   pruneBackups(expiredBefore: string): Promise<void>;
   getReceipt(operation: WriterReceipt['operation'], proposalId: string): Promise<WriterReceipt | undefined>;
   putReceipt(receipt: WriterReceipt): Promise<void>;
+  saveReconciliationReview?(review: ReconciliationReview): Promise<void>;
+  getReconciliationReview?(id: string): Promise<ReconciliationReview | undefined>;
+  insertReconciliationAcceptance?(acceptance: ReconciliationAcceptance): Promise<void>;
+  getReconciliationAcceptance?(id: string): Promise<ReconciliationAcceptance | undefined>;
+  finalizeReconciliation?(input: FinalizeReconciliationInput): Promise<ChangeProposal>;
 }
 
 export interface WordPressAdapter {

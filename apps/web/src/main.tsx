@@ -8,6 +8,7 @@ import type {
   ConnectionId,
   Experiment,
   Opportunity,
+  ReconciliationReview,
   SkillVersion,
   Task,
   TaskEvent,
@@ -51,6 +52,7 @@ const statusLabels: Record<string, string> = {
   failed: '失敗',
   cancelled: '已取消',
   review_required: '需要複核',
+  verified_transformed: '已驗證格式轉換',
   pending: '待審閱',
   approved: '已核准',
   applied: '已套用',
@@ -116,7 +118,7 @@ async function request<T>(path: string, options: RequestInit = {}, csrf?: string
 }
 
 function statusTone(status: string): string {
-  if (['ready', 'completed', 'approved', 'applied', 'active', 'measured'].includes(status)) return 'success';
+  if (['ready', 'completed', 'approved', 'applied', 'verified_transformed', 'active', 'measured'].includes(status)) return 'success';
   if (['error', 'failed', 'rejected', 'review_required', 'confounded'].includes(status)) return 'danger';
   if (['checking', 'running', 'waiting_approval', 'observing', 'evaluated'].includes(status)) return 'info';
   return 'neutral';
@@ -174,6 +176,8 @@ function App() {
   const approvalIdsRef = useRef<Record<string, string>>({});
   const [rollbackApprovalIds, setRollbackApprovalIds] = useState<Record<string, string>>({});
   const rollbackApprovalIdsRef = useRef<Record<string, string>>({});
+  const [reconciliationReviews, setReconciliationReviews] = useState<Record<string, ReconciliationReview>>({});
+  const [reconciliationAcceptanceIds, setReconciliationAcceptanceIds] = useState<Record<string, string>>({});
   const [taskEvents, setTaskEvents] = useState<Record<string, TaskEvent[]>>({});
 
   const reloadState = useCallback(async (sessionCsrf?: string) => {
@@ -305,20 +309,37 @@ function App() {
     await reloadState();
   }, '任務取消請求已送出。');
 
-  const proposalAction = (proposal: ChangeProposal, action: 'approve' | 'apply' | 'reject' | 'rollback-approve' | 'rollback') => perform(`${action}-${proposal.id}`, async () => {
+  const proposalAction = (proposal: ChangeProposal, action: 'approve' | 'apply' | 'reject' | 'rollback-approve' | 'rollback' | 'reconcile-prepare' | 'reconcile-accept' | 'reconcile') => perform(`${action}-${proposal.id}`, async () => {
     const path = `/api/proposals/${proposal.id}/${action}`;
     const approvalId = approvalIdsRef.current[proposal.id];
     const rollbackApprovalId = rollbackApprovalIdsRef.current[proposal.id];
     if (action === 'apply' && !approvalId) throw new Error('此提案尚未取得新的核准憑證，請先重新核准。');
     if (action === 'rollback' && !rollbackApprovalId) throw new Error('此回滾尚未取得新的核准憑證，請先核准回滾。');
+    const review = reconciliationReviews[proposal.id];
+    const reconciliationAcceptanceId = reconciliationAcceptanceIds[proposal.id];
+    if (action === 'reconcile-accept' && !review) throw new Error('請先檢查實際 WordPress 格式差異。');
+    if (action === 'reconcile' && !reconciliationAcceptanceId) throw new Error('請先明確接受已檢查的格式轉換。');
     const body = action === 'approve' || action === 'rollback-approve'
       ? { patchHash: proposal.patchHash }
       : action === 'apply'
         ? { approvalId }
         : action === 'rollback'
           ? { approvalId: rollbackApprovalId }
-        : {};
+        : action === 'reconcile-accept'
+          ? { reviewId: review?.id, reviewedActualHash: review?.reviewedActualHash }
+          : action === 'reconcile'
+            ? { acceptanceId: reconciliationAcceptanceId }
+            : {};
     const receipt = await request<unknown>(path, { method: 'POST', body: JSON.stringify(body) }, csrf);
+    if (action === 'reconcile-prepare') {
+      setReconciliationReviews((current) => ({ ...current, [proposal.id]: receipt as ReconciliationReview }));
+    }
+    if (action === 'reconcile-accept') {
+      const acceptanceId = receipt && typeof receipt === 'object' && typeof (receipt as { acceptanceId?: unknown }).acceptanceId === 'string'
+        ? (receipt as { acceptanceId: string }).acceptanceId : undefined;
+      if (!acceptanceId) throw new Error('伺服器未提供格式轉換接受憑證。');
+      setReconciliationAcceptanceIds((current) => ({ ...current, [proposal.id]: acceptanceId }));
+    }
     if (action === 'approve' || action === 'rollback-approve') {
       const nextApprovalId = extractApprovalId(receipt);
       if (!nextApprovalId) throw new Error('伺服器未提供核准憑證，無法安全繼續。');
@@ -331,7 +352,7 @@ function App() {
       }
     }
     await reloadState();
-  }, action === 'apply' ? '變更已套用，狀態已更新。' : action === 'rollback' ? '回滾已完成，狀態已更新。' : '審閱狀態已更新。');
+  }, action === 'apply' ? '變更已套用，狀態已更新。' : action === 'rollback' ? '回滾已完成，狀態已更新。' : action === 'reconcile' ? '格式轉換已接受，未再次寫入 WordPress。' : '審閱狀態已更新。');
 
   const proposeSkill = () => perform('skill-propose', async () => {
     await request('/api/skills/propose', { method: 'POST', body: JSON.stringify({}) }, csrf);
@@ -383,7 +404,7 @@ function App() {
             <button key={item.id} className={`nav-item ${tab === item.id ? 'is-active' : ''}`} onClick={() => setTab(item.id)}>
               <span className="nav-icon">{item.icon}</span>
               <span>{item.label}</span>
-              {item.id === 'review' && (state?.proposals.length ?? 0) > 0 && <em>{state?.proposals.filter((proposal) => proposal.status === 'pending').length}</em>}
+              {item.id === 'review' && (state?.proposals.length ?? 0) > 0 && <em>{state?.proposals.filter((proposal) => ['pending', 'approved', 'review_required'].includes(proposal.status)).length}</em>}
             </button>
           ))}
         </nav>
@@ -405,7 +426,7 @@ function App() {
         <div className="content-wrap">
           {tab === 'today' && state && <TodayView state={state} events={taskEvents} busy={busy} onCheck={checkConnections} onSync={sync} onCancel={cancelTask} />}
           {tab === 'radar' && state && <RadarView state={state} busy={busy} onCreateTask={createTask} />}
-          {tab === 'review' && state && <ReviewView state={state} busy={busy} approvalIds={approvalIds} rollbackApprovalIds={rollbackApprovalIds} onAction={proposalAction} />}
+          {tab === 'review' && state && <ReviewView state={state} busy={busy} approvalIds={approvalIds} rollbackApprovalIds={rollbackApprovalIds} reconciliationReviews={reconciliationReviews} reconciliationAcceptanceIds={reconciliationAcceptanceIds} onAction={proposalAction} />}
           {tab === 'impact' && state && <ImpactView state={state} busy={busy} onProposeSkill={proposeSkill} onEvaluateSkill={evaluateSkill} onActivateSkill={activateSkill} onToggleSchedule={toggleSchedule} />}
         </div>
       </main>
@@ -455,7 +476,7 @@ function TodayView({ state, events, busy, onCheck, onSync, onCancel }: { state: 
     <div className="metric-row">
       <MetricCard label="連線健康" value={`${readyCount}/${state.connections.length}`} note={readyCount === state.connections.length && state.connections.length > 0 ? '所有連線可用' : '需要查看設定'} tone={readyCount === state.connections.length && state.connections.length > 0 ? 'success' : 'neutral'} icon="◉" />
       <MetricCard label="待處理任務" value={formatNumber(activeTasks.length)} note="以伺服器回報為準" tone={activeTasks.length ? 'info' : 'neutral'} icon="◷" />
-      <MetricCard label="待審閱文章" value={formatNumber(state.proposals.filter((proposal) => proposal.status === 'pending').length)} note="需要人工作業" tone={state.proposals.some((proposal) => proposal.status === 'pending') ? 'warning' : 'neutral'} icon="▣" />
+      <MetricCard label="待處理文章" value={formatNumber(state.proposals.filter((proposal) => ['pending', 'approved', 'review_required'].includes(proposal.status)).length)} note="需要人工作業" tone={state.proposals.some((proposal) => ['pending', 'approved', 'review_required'].includes(proposal.status)) ? 'warning' : 'neutral'} icon="▣" />
       <MetricCard label="目前模式" value={state.mode === 'demo' ? 'DEMO' : 'LIVE'} note={state.mode === 'demo' ? '僅供演示' : '本機工作階段'} tone={state.mode === 'demo' ? 'warning' : 'success'} icon="✦" />
     </div>
     <section className="section-block"><div className="section-heading"><div><span className="section-number">01</span><h2>連線與證據</h2></div><span className="section-caption">只顯示伺服器回報狀態</span></div><div className="connections-grid">{state.connections.length ? state.connections.map((connection) => <ConnectionCard key={connection.id} connection={connection} />) : <EmptyState title="尚無連線狀態" body="等待伺服器回報網站連線資訊。" />}</div></section>
@@ -487,25 +508,31 @@ function OpportunityCard({ opportunity, index, busy, onCreate }: { opportunity: 
   return <article className="opportunity-card"><div className="opportunity-index">0{index + 1}</div><div className="opportunity-main"><div className="opportunity-heading"><div><div className="opportunity-type"><span className={`signal-dot signal-dot--${hasEvidence ? 'real' : 'hypothesis'}`} />{opportunity.kind === 'decay' ? '內容衰退訊號' : '位置機會'}<span className="post-id">POST {opportunity.postId}</span></div><h2>{opportunity.title}</h2><a href={opportunity.url} target="_blank" rel="noreferrer">{opportunity.url} ↗</a></div><StatusPill status={hasEvidence ? 'ready' : 'unconfigured'} label={hasEvidence ? '有證據' : '待補證據'} /></div><div className="opportunity-stats"><div><span>目前點擊</span><strong>{formatNumber(opportunity.clicks)}</strong></div><div><span>前期點擊</span><strong>{formatNumber(opportunity.previousClicks)}</strong></div><div><span>曝光</span><strong>{formatNumber(opportunity.impressions)}</strong></div><div><span>位置</span><strong>{typeof opportunity.position === 'number' ? opportunity.position.toFixed(1) : '—'}</strong></div>{opportunity.engagementRate !== undefined && <div><span>互動率</span><strong>{formatPercent(opportunity.engagementRate)}</strong></div>}</div><p className="opportunity-reason">{opportunity.reason}</p><div className="hypothesis-grid"><div><span className="hypothesis-label"><i />讀者假設</span><p>{opportunity.audienceHypothesis}</p></div><div><span className="hypothesis-label"><i />關鍵字假設</span><p>{opportunity.keywordHypotheses.length ? opportunity.keywordHypotheses.join(' · ') : '尚未提供'}</p></div></div><div className="opportunity-footer"><div className="evidence-chips">{opportunity.evidenceIds.length ? opportunity.evidenceIds.map((id) => <span key={id}>證據：{id}</span>) : <span className="evidence-empty">沒有證據編號</span>}</div><button className="button button--outline" onClick={onCreate} disabled={busy}>{busy ? '建立中…' : '建立審閱任務'} <span>→</span></button></div></div></article>;
 }
 
-function ReviewView({ state, busy, approvalIds, rollbackApprovalIds, onAction }: { state: AppState; busy: Record<string, boolean>; approvalIds: Record<string, string>; rollbackApprovalIds: Record<string, string>; onAction: (proposal: ChangeProposal, action: 'approve' | 'apply' | 'reject' | 'rollback-approve' | 'rollback') => void }) {
+type ProposalAction = 'approve' | 'apply' | 'reject' | 'rollback-approve' | 'rollback' | 'reconcile-prepare' | 'reconcile-accept' | 'reconcile';
+
+function ReviewView({ state, busy, approvalIds, rollbackApprovalIds, reconciliationReviews, reconciliationAcceptanceIds, onAction }: { state: AppState; busy: Record<string, boolean>; approvalIds: Record<string, string>; rollbackApprovalIds: Record<string, string>; reconciliationReviews: Record<string, ReconciliationReview>; reconciliationAcceptanceIds: Record<string, string>; onAction: (proposal: ChangeProposal, action: ProposalAction) => void }) {
   const [selectedId, setSelectedId] = useState<string>();
   const selected = state.proposals.find((proposal) => proposal.id === selectedId) ?? state.proposals[0];
   useEffect(() => { if (selectedId && !state.proposals.some((proposal) => proposal.id === selectedId)) setSelectedId(undefined); }, [selectedId, state.proposals]);
   return <>
-    <PageHeader eyebrow="WORKSPACE / HUMAN REVIEW" title="文章審閱" description="先看差異、證據與隔離預覽，再決定是否核准或套用。所有變更都保留可回滾邊界。" action={<div className="review-count"><span>待處理</span><strong>{state.proposals.filter((proposal) => ['pending', 'approved'].includes(proposal.status)).length}</strong></div>} />
-    <div className="review-layout"><aside className="proposal-list"><div className="list-heading"><span>變更提案</span><span>{state.proposals.length}</span></div>{state.proposals.length ? state.proposals.map((proposal) => <button className={`proposal-row ${selected?.id === proposal.id ? 'is-selected' : ''}`} key={proposal.id} onClick={() => setSelectedId(proposal.id)}><span className="proposal-row-dot" /><span><strong>{proposal.title}</strong><small>#{proposal.postId} · {formatDate(proposal.createdAt)}</small></span><StatusPill status={proposal.status} /></button>) : <div className="proposal-empty">尚無文章提案。<br />在需求雷達建立任務後，伺服器建立的提案會出現在這裡。</div>}</aside><div className="review-detail">{selected ? <ProposalDetail proposal={selected} busy={busy} approvalId={approvalIds[selected.id]} rollbackApprovalId={rollbackApprovalIds[selected.id]} onAction={onAction} /> : <EmptyState title="選取一個提案" body="左側會顯示伺服器回報的文章變更。" />}</div></div>
+    <PageHeader eyebrow="WORKSPACE / HUMAN REVIEW" title="文章審閱" description="先看差異、證據與隔離預覽，再決定是否核准或套用。所有變更都保留可回滾邊界。" action={<div className="review-count"><span>待處理</span><strong>{state.proposals.filter((proposal) => ['pending', 'approved', 'review_required'].includes(proposal.status)).length}</strong></div>} />
+    <div className="review-layout"><aside className="proposal-list"><div className="list-heading"><span>變更提案</span><span>{state.proposals.length}</span></div>{state.proposals.length ? state.proposals.map((proposal) => <button className={`proposal-row ${selected?.id === proposal.id ? 'is-selected' : ''}`} key={proposal.id} onClick={() => setSelectedId(proposal.id)}><span className="proposal-row-dot" /><span><strong>{proposal.title}</strong><small>#{proposal.postId} · {formatDate(proposal.createdAt)}</small></span><StatusPill status={proposal.status} /></button>) : <div className="proposal-empty">尚無文章提案。<br />在需求雷達建立任務後，伺服器建立的提案會出現在這裡。</div>}</aside><div className="review-detail">{selected ? <ProposalDetail proposal={selected} busy={busy} approvalId={approvalIds[selected.id]} rollbackApprovalId={rollbackApprovalIds[selected.id]} reconciliationReview={reconciliationReviews[selected.id]} reconciliationAcceptanceId={reconciliationAcceptanceIds[selected.id]} onAction={onAction} /> : <EmptyState title="選取一個提案" body="左側會顯示伺服器回報的文章變更。" />}</div></div>
   </>;
 }
 
-function ProposalDetail({ proposal, busy, approvalId, rollbackApprovalId, onAction }: { proposal: ChangeProposal; busy: Record<string, boolean>; approvalId?: string; rollbackApprovalId?: string; onAction: (proposal: ChangeProposal, action: 'approve' | 'apply' | 'reject' | 'rollback-approve' | 'rollback') => void }) {
+function ProposalDetail({ proposal, busy, approvalId, rollbackApprovalId, reconciliationReview, reconciliationAcceptanceId, onAction }: { proposal: ChangeProposal; busy: Record<string, boolean>; approvalId?: string; rollbackApprovalId?: string; reconciliationReview?: ReconciliationReview; reconciliationAcceptanceId?: string; onAction: (proposal: ChangeProposal, action: ProposalAction) => void }) {
   const [view, setView] = useState<'diff' | 'preview'>('diff');
   const canApprove = proposal.status === 'pending';
   const canApply = proposal.status === 'approved' && Boolean(approvalId);
   const needsReapproval = proposal.status === 'approved' && !approvalId;
   const canReject = proposal.status === 'pending' || proposal.status === 'approved';
-  const canRollback = (proposal.status === 'applied' || proposal.status === 'review_required') && Boolean(rollbackApprovalId);
-  const canApproveRollback = proposal.status === 'applied' || proposal.status === 'review_required';
-  return <div className="proposal-detail"><div className="proposal-detail-head"><div><div className="opportunity-type"><span className="signal-dot signal-dot--real" />文章變更提案 <span className="post-id">POST {proposal.postId}</span></div><h2>{proposal.title}</h2><a href={proposal.url} target="_blank" rel="noreferrer">開啟原文 ↗</a></div><StatusPill status={proposal.status} /></div><div className="proposal-summary"><strong>變更摘要</strong><p>{proposal.summary}</p><div className="proposal-evidence">{proposal.evidenceIds.map((id) => <span key={id}>證據：{id}</span>)}</div></div><div className="review-tabs"><button className={view === 'diff' ? 'is-active' : ''} onClick={() => setView('diff')}>文字差異</button><button className={view === 'preview' ? 'is-active' : ''} onClick={() => setView('preview')}>隔離預覽</button><span className="hash-label">變更指紋 {proposal.patchHash.slice(0, 12)}…</span></div>{view === 'diff' ? <DiffView before={proposal.beforeHtml} after={proposal.afterHtml} /> : <PreviewView before={proposal.beforeHtml} after={proposal.afterHtml} />}{proposal.error && <div className="proposal-error">{proposal.error}</div>}<div className="proposal-actions">{(canApprove || needsReapproval) && <button className="button button--primary" onClick={() => onAction(proposal, 'approve')} disabled={busy[`approve-${proposal.id}`]}>{busy[`approve-${proposal.id}`] ? '核准中…' : needsReapproval ? '重新核准' : '核准變更'}</button>}{canApply && <button className="button button--primary" onClick={() => onAction(proposal, 'apply')} disabled={busy[`apply-${proposal.id}`]}>{busy[`apply-${proposal.id}`] ? '套用中…' : '套用至 WordPress'}</button>}{canReject && <button className="button button--quiet-danger" onClick={() => onAction(proposal, 'reject')} disabled={busy[`reject-${proposal.id}`]}>{busy[`reject-${proposal.id}`] ? '拒絕中…' : '拒絕'}</button>}{canApproveRollback && <button className="button button--outline-danger" onClick={() => onAction(proposal, 'rollback-approve')} disabled={busy[`rollback-approve-${proposal.id}`]}>{busy[`rollback-approve-${proposal.id}`] ? '核准中…' : '核准回滾'}</button>}{canRollback && <button className="button button--outline-danger" onClick={() => onAction(proposal, 'rollback')} disabled={busy[`rollback-${proposal.id}`]}>{busy[`rollback-${proposal.id}`] ? '回滾中…' : '執行回滾'}</button>}<span className="action-boundary">需要人工作業 · {approvalId ? `核准憑證 ${approvalId.slice(0, 10)}…` : rollbackApprovalId ? `回滾憑證 ${rollbackApprovalId.slice(0, 10)}…` : '尚無核准憑證'}</span></div></div>;
+  const canRollback = (proposal.status === 'applied' || proposal.status === 'verified_transformed') && Boolean(rollbackApprovalId);
+  const canApproveRollback = proposal.status === 'applied' || proposal.status === 'verified_transformed';
+  return <div className="proposal-detail"><div className="proposal-detail-head"><div><div className="opportunity-type"><span className="signal-dot signal-dot--real" />文章變更提案 <span className="post-id">POST {proposal.postId}</span></div><h2>{proposal.title}</h2><a href={proposal.url} target="_blank" rel="noreferrer">開啟原文 ↗</a></div><StatusPill status={proposal.status} /></div><div className="proposal-summary"><strong>變更摘要</strong><p>{proposal.summary}</p><div className="proposal-evidence">{proposal.evidenceIds.map((id) => <span key={id}>證據：{id}</span>)}</div></div><div className="review-tabs"><button className={view === 'diff' ? 'is-active' : ''} onClick={() => setView('diff')}>文字差異</button><button className={view === 'preview' ? 'is-active' : ''} onClick={() => setView('preview')}>隔離預覽</button><span className="hash-label">變更指紋 {proposal.patchHash.slice(0, 12)}…</span></div>{view === 'diff' ? <DiffView before={proposal.beforeHtml} after={proposal.afterHtml} /> : <PreviewView before={proposal.beforeHtml} after={proposal.afterHtml} />}{proposal.error && <div className="proposal-error">原始複核原因：{proposal.error}</div>}{reconciliationReview && <><div className="proposal-summary"><strong>WordPress 實際格式差異</strong><p>已確認實際內容僅移除段落標記；接受後不會再次寫入 WordPress。請核對下方精確差異與實際內容指紋 {reconciliationReview.reviewedActualHash.slice(0, 12)}…</p></div><ExactHtmlDiff approved={proposal.afterHtml} actual={reconciliationReview.actualBodyHtml} /></>}<div className="proposal-actions">{(canApprove || needsReapproval) && <button className="button button--primary" onClick={() => onAction(proposal, 'approve')} disabled={busy[`approve-${proposal.id}`]}>{busy[`approve-${proposal.id}`] ? '核准中…' : needsReapproval ? '重新核准' : '核准變更'}</button>}{canApply && <button className="button button--primary" onClick={() => onAction(proposal, 'apply')} disabled={busy[`apply-${proposal.id}`]}>{busy[`apply-${proposal.id}`] ? '套用中…' : '套用至 WordPress'}</button>}{canReject && <button className="button button--quiet-danger" onClick={() => onAction(proposal, 'reject')} disabled={busy[`reject-${proposal.id}`]}>{busy[`reject-${proposal.id}`] ? '拒絕中…' : '拒絕'}</button>}{proposal.status === 'review_required' && !reconciliationReview && <button className="button button--outline" onClick={() => onAction(proposal, 'reconcile-prepare')}>檢查格式轉換</button>}{proposal.status === 'review_required' && reconciliationReview && !reconciliationAcceptanceId && <button className="button button--primary" onClick={() => onAction(proposal, 'reconcile-accept')}>明確接受格式轉換</button>}{proposal.status === 'review_required' && reconciliationAcceptanceId && <button className="button button--primary" onClick={() => onAction(proposal, 'reconcile')}>完成無寫入核對</button>}{canApproveRollback && <button className="button button--outline-danger" onClick={() => onAction(proposal, 'rollback-approve')} disabled={busy[`rollback-approve-${proposal.id}`]}>{busy[`rollback-approve-${proposal.id}`] ? '核准中…' : '核准回滾'}</button>}{canRollback && <button className="button button--outline-danger" onClick={() => onAction(proposal, 'rollback')} disabled={busy[`rollback-${proposal.id}`]}>{busy[`rollback-${proposal.id}`] ? '回滾中…' : '執行回滾'}</button>}<span className="action-boundary">需要人工作業 · {reconciliationAcceptanceId ? '格式接受已記錄' : approvalId ? `核准憑證 ${approvalId.slice(0, 10)}…` : rollbackApprovalId ? `回滾憑證 ${rollbackApprovalId.slice(0, 10)}…` : '尚無核准憑證'}</span></div></div>;
+}
+
+function ExactHtmlDiff({ approved, actual }: { approved: string; actual: string }) {
+  return <div className="diff-view"><div className="diff-column diff-column--before"><div className="diff-column-head"><span>APPROVED HTML</span><small>原核准內容</small></div><pre>{approved}</pre></div><div className="diff-column diff-column--after"><div className="diff-column-head"><span>ACTUAL HTML</span><small>WordPress 實際內容</small></div><pre>{actual}</pre></div></div>;
 }
 
 function DiffView({ before, after }: { before: string; after: string }) {

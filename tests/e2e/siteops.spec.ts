@@ -146,4 +146,62 @@ test('completes the guarded demo journey through review, apply, rollback, reject
     await expect(page.getByRole('heading', { name: item.heading })).toBeVisible();
   }
   await expect(page.locator('.main-nav')).toBeVisible();
+
+  // Synthetic recovery journey: the three explicit calls verify UI intent without another WordPress apply.
+  let recoveryStatus: 'review_required' | 'verified_transformed' = 'review_required';
+  const recoveryMutations: Array<{ url: string; body?: Record<string, unknown> }> = [];
+  const approvedHtml = '<p>First</p><p>Second</p>';
+  const actualHtml = 'FirstSecond';
+  const reviewedActualHash = 'a'.repeat(64);
+  await page.route('**/api/proposals/recovery-proposal/reconcile-prepare', async (route) => {
+    recoveryMutations.push({ url: route.request().url() });
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+      id: 'review-1', proposalId: 'recovery-proposal', postId: 77,
+      sessionId: 'server-session', baseHash: 'b'.repeat(64), originalPatchHash: 'c'.repeat(64),
+      originalApplyReceiptId: 'apply-review-1', originalReviewReason: 'Authenticated read-back differed after apply.',
+      reviewedActualHash, actualBodyHtml: actualHtml, transform: 'strip_bare_p_v1', createdAt: '2026-10-23T00:02:00Z',
+    }) });
+  });
+  await page.route('**/api/proposals/recovery-proposal/reconcile-accept', async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    recoveryMutations.push({ url: route.request().url(), body });
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ acceptanceId: 'acceptance-1' }) });
+  });
+  await page.route('**/api/proposals/recovery-proposal/reconcile', async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    recoveryMutations.push({ url: route.request().url(), body });
+    recoveryStatus = 'verified_transformed';
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+      receipt: { id: 'reconcile-receipt-1', status: 'verified_transformed' },
+    }) });
+  });
+  await page.route('**/api/state', async (route) => {
+    const response = await route.fetch();
+    const state = await response.json() as Record<string, unknown>;
+    await route.fulfill({ response, json: { ...state, proposals: [{
+      id: 'recovery-proposal', taskId: 'recovery-task', postId: 77, title: '格式轉換核對',
+      url: 'https://example.test/article/', beforeHtml: '<p>Before</p>', afterHtml: approvedHtml,
+      summary: 'Only paragraph wrappers may have changed.', evidenceIds: ['e-1'],
+      baseHash: 'b'.repeat(64), patchHash: 'c'.repeat(64), status: recoveryStatus,
+      createdAt: '2026-10-23T00:00:00Z', afterHash: recoveryStatus === 'verified_transformed' ? reviewedActualHash : undefined,
+      error: 'Authenticated read-back differed after apply.',
+    }] } });
+  });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: '文章審閱' }).click();
+  await expect(page.getByText('原始複核原因：Authenticated read-back differed after apply.', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '檢查格式轉換' }).click();
+  await expect(page.getByText('已確認實際內容僅移除段落標記；接受後不會再次寫入 WordPress。', { exact: false })).toBeVisible();
+  await expect(page.locator('pre')).toHaveText([approvedHtml, actualHtml]);
+  await page.getByRole('button', { name: '明確接受格式轉換' }).click();
+  await expect(page.getByText('格式接受已記錄', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: '完成無寫入核對' })).toBeVisible();
+  await page.getByRole('button', { name: '完成無寫入核對' }).click();
+  await expect(page.getByText('格式轉換已接受，未再次寫入 WordPress。', { exact: true })).toBeVisible();
+  await expect(page.locator('.review-detail').getByText('已驗證格式轉換', { exact: true })).toBeVisible();
+  expect(recoveryMutations).toHaveLength(3);
+  expect(recoveryMutations[1].body).toEqual({ reviewId: 'review-1', reviewedActualHash });
+  expect(recoveryMutations[2].body).toEqual({ acceptanceId: 'acceptance-1' });
+  expect(recoveryMutations.some((request) => request.url.endsWith('/apply'))).toBe(false);
 });

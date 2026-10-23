@@ -4,7 +4,9 @@ YOLO SiteOps is a local-first WordPress operations workbench. It reads evidence,
 
 ## Status
 
-This repository is not a completed release. The demo flow runs locally, and the currently verified real Codex CLI is `0.163.0`. A real Codex adversarial synthetic-article smoke passed, as did the Skill reflection, three replay, activation, and baseline-restore lifecycle smoke; neither used production reads or writes. These checks do not prove complete live E2E, production readiness, ranking, traffic, CTR, GEO, or ROI results.
+The v0.1.0 MVP has passed fresh installation, 140 tests, the Chromium journey, real Codex plus disposable WordPress apply/restore, and Skill reflection/replay checks. One human-approved production article acceptance also passed, including a separate acceptance record for server-side paragraph formatting. The verified Codex CLI is `0.163.0`.
+
+See [`docs/validation.md`](docs/validation.md) for scope and limitations. These results prove the recorded MVP workflows; ranking, traffic, CTR, GEO, and ROI outcomes require later measurement.
 
 ## Requirements and demo
 
@@ -47,6 +49,8 @@ npm start
 ```
 
 See [`config.example.json`](config.example.json) and [`docs/configuration.md`](docs/configuration.md). WordPress must be a fixed HTTPS origin. GSC uses `webmasters.readonly`; GA4 uses `analytics.readonly`; WordPress writes use an application password.
+
+On a fresh checkout, run `npm ci` and `npm run build` before the live startup command. Connection credentials remain on the server; the browser uses only its local workbench session.
 
 Codex uses the installed, logged-in CLI with its default model. SiteOps does not provide a model override. Live mode requires `SITEOPS_AGENT=codex`.
 

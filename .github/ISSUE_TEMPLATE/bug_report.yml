@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible SiteOps problem using synthetic or redacted data.
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, bootstrap URLs, private metrics, database files, or production post bodies. See SECURITY.md for security reports.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Runtime mode
+      options:
+        - Demo
+        - Disposable WordPress fixture
+        - Live (redacted reproduction only)
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Prefer the demo or a synthetic fixture.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS, Node.js, and optional Codex CLI versions

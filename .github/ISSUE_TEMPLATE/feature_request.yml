@@ -1,0 +1,22 @@
+name: Feature request
+description: Propose a bounded improvement to the WordPress operations loop.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Operator problem
+      description: Explain the task and where the current workflow stops helping.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Observable outcome
+      description: Describe how an operator could verify that the feature works.
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Data and approval boundaries
+      description: Note any new external service, permission, model call, or production write the feature would need.

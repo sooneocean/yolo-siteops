@@ -82,6 +82,22 @@ export function createApp(options: CreateAppOptions): express.Express {
     const receipt = await options.service.applyProposal(proposalId(req), sessionId(req), stringField(req.body?.approvalId, 'approvalId'));
     res.json({ receipt });
   }));
+  app.post('/api/proposals/:id/reconcile-prepare', asyncRoute(async (req, res) => {
+    res.json(await options.service.prepareReconciliation(proposalId(req), sessionId(req)));
+  }));
+  app.post('/api/proposals/:id/reconcile-accept', asyncRoute(async (req, res) => {
+    const acceptance = await options.service.acceptReconciliation(
+      proposalId(req), sessionId(req), stringField(req.body?.reviewId, 'reviewId'),
+      stringField(req.body?.reviewedActualHash, 'reviewedActualHash'),
+    );
+    res.status(201).json({ acceptanceId: acceptance.id });
+  }));
+  app.post('/api/proposals/:id/reconcile', asyncRoute(async (req, res) => {
+    const receipt = await options.service.reconcileProposal(
+      proposalId(req), sessionId(req), stringField(req.body?.acceptanceId, 'acceptanceId'),
+    );
+    res.json({ receipt });
+  }));
   app.post('/api/proposals/:id/reject', asyncRoute(async (req, res) => {
     const reason = typeof req.body?.reason === 'string' && req.body.reason ? req.body.reason : 'Rejected by operator';
     res.json(await options.service.rejectProposal(proposalId(req), reason));

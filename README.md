@@ -4,7 +4,9 @@ YOLO SiteOps 是一個 local-first 的 WordPress 營運工作台：先讀取證�
 
 ## 目前狀態
 
-這是尚未完成 release 的開源專案。demo 流程可在本機執行；目前已驗證的真實 Codex CLI 為 `0.163.0`。一次 real Codex adversarial synthetic article smoke 已通過，Skill reflection、3 次 replay、activate 與 baseline restore 的 lifecycle smoke 也已通過；兩者都沒有讀取或寫入 production。這些證據不等於完整 live E2E、production readiness、排名、流量、CTR、GEO 或 ROI 成果。
+v0.1.0 MVP 已通過乾淨安裝、140 項測試、Chromium 操作流程、真實 Codex 與隔離 WordPress 寫入／回復，以及 Skill 反思與回放驗證。另完成一篇經人工核准的正式 WordPress 驗收，包含站端段落格式轉換的獨立接受紀錄。已驗證的 Codex CLI 為 `0.163.0`。
+
+驗證範圍與限制見 [`docs/validation.md`](docs/validation.md)。這些結果證明已記錄的 MVP 操作流程；排名、流量、CTR、GEO 與 ROI 仍須後續量測。
 
 ## 需求
 
@@ -51,6 +53,8 @@ npm start
 ```
 
 設定欄位與唯讀 scopes 見 [`config.example.json`](config.example.json) 與 [`docs/configuration.md`](docs/configuration.md)。WordPress 必須是固定 HTTPS origin；GSC 使用 `webmasters.readonly`，GA4 使用 `analytics.readonly`。WordPress 寫回使用 application password。
+
+首次安裝先執行 `npm ci` 與 `npm run build`，再使用上面的 live 啟動指令。連線設定留在伺服器端，瀏覽器只使用本機工作台的登入工作階段。
 
 Codex 使用本機已安裝且已登入的 CLI，採其預設模型；SiteOps 不提供 model override，也不應以設定檔覆寫。live 模式強制 `SITEOPS_AGENT=codex`。
 

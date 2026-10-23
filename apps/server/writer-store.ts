@@ -1,9 +1,10 @@
-import type { ChangeProposal } from '../../packages/contracts.js';
+import type { ChangeProposal, ReconciliationReview } from '../../packages/contracts.js';
 import { Store } from './store.js';
-import type { ApprovalRecord, WriterBackup, WriterReceipt, WriterStorage } from './writer/types.js';
+import type { ApprovalRecord, FinalizeReconciliationInput, ReconciliationAcceptance, WriterBackup, WriterReceipt, WriterStorage } from './writer/types.js';
 
 const KINDS = {
   proposal: 'proposal', approval: 'writer_approval', backup: 'writer_backup', receipt: 'writer_receipt',
+  reconciliationReview: 'writer_reconciliation_review', reconciliationAcceptance: 'writer_reconciliation_acceptance',
 } as const;
 
 export class SQLiteWriterStorage implements WriterStorage {
@@ -35,6 +36,52 @@ export class SQLiteWriterStorage implements WriterStorage {
   }
   async putReceipt(receipt: WriterReceipt) {
     this.store.put(KINDS.receipt, `${receipt.operation}:${receipt.proposalId}`, receipt);
+  }
+  async saveReconciliationReview(review: ReconciliationReview) { this.store.put(KINDS.reconciliationReview, review.id, review); }
+  async getReconciliationReview(id: string) { return this.store.get<ReconciliationReview>(KINDS.reconciliationReview, id); }
+  async insertReconciliationAcceptance(acceptance: ReconciliationAcceptance) {
+    this.store.db.prepare('INSERT INTO records(kind,id,value) VALUES(?,?,?)').run(
+      KINDS.reconciliationAcceptance, acceptance.id, JSON.stringify(acceptance),
+    );
+  }
+  async getReconciliationAcceptance(id: string) {
+    return this.store.get<ReconciliationAcceptance>(KINDS.reconciliationAcceptance, id);
+  }
+  async finalizeReconciliation(input: FinalizeReconciliationInput): Promise<ChangeProposal> {
+    return this.store.transaction(() => {
+      const acceptance = this.store.get<ReconciliationAcceptance>(KINDS.reconciliationAcceptance, input.acceptance.id);
+      const proposal = this.store.get<ChangeProposal>(KINDS.proposal, input.acceptance.proposalId);
+      const original = this.store.get<WriterReceipt>(KINDS.receipt, `apply:${input.acceptance.proposalId}`);
+      if (!acceptance || acceptance.consumedAt || acceptance.expiresAt <= input.reconciledAt
+        || JSON.stringify(acceptance) !== JSON.stringify(input.acceptance)
+        || acceptance.transform !== 'strip_bare_p_v1'
+        || !proposal || proposal.status !== 'review_required'
+        || proposal.postId !== acceptance.postId || proposal.baseHash !== acceptance.baseHash
+        || proposal.patchHash !== acceptance.originalPatchHash || proposal.error !== acceptance.originalReviewReason
+        || !original || original.id !== acceptance.originalApplyReceiptId || original.status !== 'review_required'
+        || original.operation !== 'apply' || original.proposalId !== proposal.id || original.postId !== proposal.postId
+        || input.receipt.operation !== 'reconcile' || input.receipt.status !== 'verified_transformed'
+        || input.receipt.proposalId !== proposal.id || input.receipt.postId !== proposal.postId
+        || input.receipt.sessionId !== acceptance.sessionId || input.receipt.beforeHash !== acceptance.originalPatchHash
+        || input.receipt.afterHash !== acceptance.reviewedActualHash || input.receipt.createdAt !== input.reconciledAt) {
+        throw new Error('Reconciliation acceptance bindings are no longer valid');
+      }
+      if (this.store.get<WriterReceipt>(KINDS.receipt, `reconcile:${proposal.id}`)) {
+        throw new Error('Reconciliation receipt already exists');
+      }
+      this.store.put(KINDS.reconciliationAcceptance, acceptance.id, { ...acceptance, consumedAt: input.reconciledAt });
+      this.store.db.prepare('INSERT INTO records(kind,id,value) VALUES(?,?,?)').run(
+        KINDS.receipt, `reconcile:${proposal.id}`, JSON.stringify(input.receipt),
+      );
+      const reconciled: ChangeProposal = {
+        ...proposal, status: 'verified_transformed', afterHash: acceptance.reviewedActualHash,
+        originalReviewReason: acceptance.originalReviewReason, originalApplyReceiptId: acceptance.originalApplyReceiptId,
+        originalPatchHash: acceptance.originalPatchHash, reconciliationTransform: acceptance.transform,
+        reconciledAt: input.reconciledAt, reviewedActualHash: acceptance.reviewedActualHash,
+      };
+      this.store.put(KINDS.proposal, proposal.id, reconciled);
+      return reconciled;
+    });
   }
 
   listProposals(): ChangeProposal[] { return this.store.list<ChangeProposal>(KINDS.proposal); }

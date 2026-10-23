@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { ChangeProposal } from '../../../packages/contracts.js';
+import type { ChangeProposal, ReconciliationReview } from '../../../packages/contracts.js';
 import { assertSafeProposalHtml, normalizeHtmlText } from '../security/html.js';
 import { hashPostState } from './hash.js';
 import { acquireWriterLock, type WriterLockOptions } from './lock.js';
@@ -7,6 +7,7 @@ import {
   UnknownWordPressWriteError,
   type ApprovalKind,
   type ApprovalRecord,
+  type ReconciliationAcceptance,
   type WordPressAdapter,
   type WordPressPostSnapshot,
   type WriterBackup,
@@ -160,8 +161,8 @@ export class WriterService {
 
   async approveRollback(args: { proposalId: string; sessionId: string; expiresInMs?: number }): Promise<ApprovalRecord> {
     const proposal = await this.requireProposal(args.proposalId);
-    if (proposal.status !== 'applied' || !proposal.afterHash) {
-      throw new WriterServiceError('proposal_not_applied', 'Only an applied proposal may be approved for rollback');
+    if (!['applied', 'verified_transformed'].includes(proposal.status) || !proposal.afterHash) {
+      throw new WriterServiceError('proposal_not_applied', 'Only a verified applied proposal may be approved for rollback');
     }
     const backup = await this.requireBackup(proposal.id);
     return this.createApproval('rollback', proposal, args.sessionId, proposal.afterHash, backup.stateHash, args.expiresInMs);
@@ -175,7 +176,7 @@ export class WriterService {
       const replay = await this.storage.getReceipt('rollback', args.proposalId);
       if (replay) return this.requireReceiptSession(replay, args.sessionId);
       const proposal = await this.requireProposal(args.proposalId);
-      if (proposal.status !== 'applied' || !proposal.afterHash) {
+      if (!['applied', 'verified_transformed'].includes(proposal.status) || !proposal.afterHash) {
         throw new WriterServiceError('proposal_not_applied', 'Proposal is not eligible for rollback');
       }
       const backup = await this.requireBackup(proposal.id);
@@ -215,6 +216,112 @@ export class WriterService {
     }
   }
 
+  async prepareReconciliation(args: { proposalId: string; sessionId: string }): Promise<ReconciliationReview> {
+    if (!args.sessionId) throw new WriterServiceError('session_required', 'Reconciliation review requires a session', 401);
+    const proposal = await this.requireProposal(args.proposalId);
+    if (proposal.status !== 'review_required' || !proposal.error) {
+      throw new WriterServiceError('proposal_not_review_required', 'Only an unresolved review-required apply may be reconciled');
+    }
+    const original = await this.storage.getReceipt('apply', proposal.id);
+    if (!original || original.status !== 'review_required') {
+      throw new WriterServiceError('original_receipt_required', 'The original review-required apply receipt is missing');
+    }
+    const backup = await this.requireBackup(proposal.id);
+    const release = await acquireWriterLock(`yolo-siteops:reconcile-prepare:${proposal.id}`, this.lockOptions);
+    try {
+      const actual = await this.adapter.getPostForEdit(proposal.postId);
+      this.validateReconciliationPost(proposal, backup, actual);
+      const expectedActualBody = proposal.afterHtml.replace(/<\/?p>/g, '');
+      if (actual.bodyHtml !== expectedActualBody) {
+        throw new WriterServiceError('unsupported_wordpress_transform', 'Actual WordPress body is not the exact approved bare-p transformation');
+      }
+      const readback = await this.adapter.checkPublicReadback(actual);
+      ensureUrlOrigin(readback.url, this.siteOrigin);
+      expectPublicReadback(actual, readback);
+      const review: ReconciliationReview = {
+        id: crypto.randomUUID(), proposalId: proposal.id, postId: proposal.postId, sessionId: args.sessionId,
+        baseHash: proposal.baseHash, originalPatchHash: proposal.patchHash, originalApplyReceiptId: original.id,
+        originalReviewReason: proposal.error, reviewedActualHash: hashPostState(actual), actualBodyHtml: actual.bodyHtml,
+        transform: 'strip_bare_p_v1', createdAt: this.now().toISOString(),
+      };
+      if (!this.storage.saveReconciliationReview) throw new WriterServiceError('reconciliation_storage_unavailable', 'Reconciliation storage is unavailable', 503);
+      await this.storage.saveReconciliationReview(review);
+      return review;
+    } finally {
+      await release();
+    }
+  }
+
+  async acceptReconciliation(args: { reviewId: string; proposalId: string; sessionId: string; reviewedActualHash: string; expiresInMs?: number }): Promise<ReconciliationAcceptance> {
+    if (!this.storage.getReconciliationReview || !this.storage.insertReconciliationAcceptance) {
+      throw new WriterServiceError('reconciliation_storage_unavailable', 'Reconciliation storage is unavailable', 503);
+    }
+    const review = await this.storage.getReconciliationReview(args.reviewId);
+    const proposal = await this.requireProposal(args.proposalId);
+    if (!review || review.proposalId !== proposal.id || review.sessionId !== args.sessionId
+      || review.reviewedActualHash !== args.reviewedActualHash || proposal.status !== 'review_required'
+      || proposal.baseHash !== review.baseHash || proposal.patchHash !== review.originalPatchHash
+      || proposal.error !== review.originalReviewReason) {
+      throw new WriterServiceError('invalid_reconciliation_review', 'Reconciliation acceptance does not match the reviewed state', 403);
+    }
+    const expiresInMs = args.expiresInMs ?? 10 * 60 * 1000;
+    if (!Number.isFinite(expiresInMs) || expiresInMs <= 0 || expiresInMs > 60 * 60 * 1000) {
+      throw new WriterServiceError('invalid_approval_expiry', 'Acceptance expiry must be between zero and one hour', 400);
+    }
+    const now = this.now();
+    const acceptance: ReconciliationAcceptance = {
+      id: crypto.randomUUID(), proposalId: proposal.id, postId: proposal.postId, sessionId: args.sessionId,
+      baseHash: review.baseHash, originalPatchHash: review.originalPatchHash,
+      originalApplyReceiptId: review.originalApplyReceiptId, originalReviewReason: review.originalReviewReason,
+      reviewedActualHash: review.reviewedActualHash, transform: review.transform, createdAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + expiresInMs).toISOString(),
+    };
+    await this.storage.insertReconciliationAcceptance(acceptance);
+    return acceptance;
+  }
+
+  async reconcile(args: { proposalId: string; acceptanceId: string; sessionId: string }): Promise<WriterReceipt> {
+    const existing = await this.storage.getReceipt('reconcile', args.proposalId);
+    if (existing) return this.requireReceiptSession(existing, args.sessionId);
+    if (!this.storage.getReconciliationAcceptance || !this.storage.finalizeReconciliation) {
+      throw new WriterServiceError('reconciliation_storage_unavailable', 'Reconciliation storage is unavailable', 503);
+    }
+    const release = await acquireWriterLock(`yolo-siteops:reconcile:${args.proposalId}`, this.lockOptions);
+    try {
+      const replay = await this.storage.getReceipt('reconcile', args.proposalId);
+      if (replay) return this.requireReceiptSession(replay, args.sessionId);
+      const proposal = await this.requireProposal(args.proposalId);
+      const acceptance = await this.storage.getReconciliationAcceptance(args.acceptanceId);
+      if (!acceptance || acceptance.proposalId !== proposal.id || acceptance.sessionId !== args.sessionId
+        || acceptance.consumedAt || Date.parse(acceptance.expiresAt) <= this.now().getTime()
+        || acceptance.postId !== proposal.postId || acceptance.transform !== 'strip_bare_p_v1'
+        || proposal.status !== 'review_required' || proposal.error !== acceptance.originalReviewReason
+        || proposal.patchHash !== acceptance.originalPatchHash || proposal.baseHash !== acceptance.baseHash) {
+        throw new WriterServiceError('invalid_reconciliation_acceptance', 'Reconciliation acceptance is invalid, expired, or already consumed', 403);
+      }
+      const backup = await this.requireBackup(proposal.id);
+      const actual = await this.adapter.getPostForEdit(proposal.postId);
+      this.validateReconciliationPost(proposal, backup, actual);
+      if (actual.bodyHtml !== proposal.afterHtml.replace(/<\/?p>/g, '') || hashPostState(actual) !== acceptance.reviewedActualHash) {
+        throw new WriterServiceError('reconciliation_drift', 'WordPress content changed after reconciliation review');
+      }
+      const readback = await this.adapter.checkPublicReadback(actual);
+      ensureUrlOrigin(readback.url, this.siteOrigin);
+      expectPublicReadback(actual, readback);
+      const at = this.now().toISOString();
+      const receipt: WriterReceipt = {
+        id: crypto.randomUUID(), sessionId: args.sessionId, operation: 'reconcile', proposalId: proposal.id,
+        postId: proposal.postId, status: 'verified_transformed', beforeHash: proposal.patchHash,
+        afterHash: acceptance.reviewedActualHash, createdAt: at,
+        message: 'Verified exact WordPress strip_bare_p_v1 formatting transformation without another write.',
+      };
+      await this.storage.finalizeReconciliation({ acceptance, receipt, reconciledAt: at });
+      return receipt;
+    } finally {
+      await release();
+    }
+  }
+
   private async requireProposal(id: string): Promise<ChangeProposal> {
     const proposal = await this.storage.getProposal(id);
     if (!proposal) throw new WriterServiceError('proposal_not_found', 'Proposal was not found', 404);
@@ -238,6 +345,16 @@ export class WriterService {
   private validatePostWrite(before: WordPressPostSnapshot, after: WordPressPostSnapshot, expectedHash: string): void {
     if (after.postId !== before.postId || after.url !== before.url || hashPostState(after) !== expectedHash) {
       throw new WriterServiceError('authenticated_readback_mismatch', 'Authenticated WordPress read-back did not match the requested body-only update');
+    }
+  }
+
+  private validateReconciliationPost(proposal: ChangeProposal, backup: WriterBackup, actual: WordPressPostSnapshot): void {
+    const proposalUrl = ensureUrlOrigin(proposal.url, this.siteOrigin);
+    const actualUrl = ensureUrlOrigin(actual.url, this.siteOrigin);
+    if (actual.postId !== proposal.postId || actual.postId !== backup.post.postId || proposalUrl.href !== actualUrl.href
+      || actual.url !== backup.post.url || actual.status !== backup.post.status
+      || hashPostState({ ...backup.post, bodyHtml: actual.bodyHtml }) !== hashPostState(actual)) {
+      throw new WriterServiceError('reconciliation_identity_drift', 'WordPress identity, URL, status, or protected fields changed');
     }
   }
 

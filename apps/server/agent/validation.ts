@@ -6,7 +6,7 @@ import { AgentSecurityError } from './errors.js';
 export interface ReflectionEvidenceInput {
   active: { id: string; content: string };
   tasks: Array<{ status: 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled' | 'review_required' }>;
-  proposals: Array<{ status: 'pending' | 'approved' | 'rejected' | 'applied' | 'rolled_back' | 'review_required' }>;
+  proposals: Array<{ status: 'pending' | 'approved' | 'rejected' | 'applied' | 'rolled_back' | 'review_required' | 'verified_transformed' }>;
 }
 
 export interface ReflectionResult {
@@ -89,7 +89,7 @@ const reflectionEvidenceSchema = z.object({
     status: z.enum(['queued', 'running', 'waiting_approval', 'completed', 'failed', 'cancelled', 'review_required']),
   }).strict()).max(30),
   proposals: z.array(z.object({
-    status: z.enum(['pending', 'approved', 'rejected', 'applied', 'rolled_back', 'review_required']),
+    status: z.enum(['pending', 'approved', 'rejected', 'applied', 'rolled_back', 'review_required', 'verified_transformed']),
   }).strict()).max(30),
 }).strict();
 

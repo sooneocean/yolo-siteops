@@ -210,8 +210,22 @@ describe('HttpWordPressAdapter', () => {
     expect(calls.every((call) => call.init?.signal instanceof AbortSignal)).toBe(true);
     expect(JSON.parse(String(calls[1].init?.body))).toEqual({ content: post.bodyHtml });
     expect(publicReadback).toMatchObject({ visibility: 'public', statusCode: 200, normalizedText: 'Hello world' });
-    expect(calls[2].url).toContain('context=view');
-    expect(calls[3].url).toBe('https://example.test/article/');
+    const editUrl = new URL(calls[0].url);
+    const writeUrl = new URL(calls[1].url);
+    const publicRestUrl = new URL(calls[2].url);
+    const publicPageUrl = new URL(calls[3].url);
+    expect(editUrl.searchParams.has('_siteops_verify')).toBe(false);
+    expect(writeUrl.searchParams.has('_siteops_verify')).toBe(false);
+    expect(publicRestUrl.searchParams.get('context')).toBe('view');
+    expect(publicPageUrl.href).toBe('https://example.test/article/');
+    const restNonce = publicRestUrl.searchParams.get('_siteops_verify');
+    expect(restNonce).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+    expect(publicPageUrl.searchParams.has('_siteops_verify')).toBe(false);
+    expect(new Headers(calls[0].init?.headers).has('Cache-Control')).toBe(false);
+    expect(new Headers(calls[1].init?.headers).has('Cache-Control')).toBe(false);
+    expect(new Headers(calls[2].init?.headers).get('Cache-Control')).toBe('no-cache');
+    expect(new Headers(calls[3].init?.headers).get('Cache-Control')).toBe('no-cache');
+    expect(publicReadback.url).toBe('https://example.test/article/');
   });
 
   it('rejects redirect and ambiguous update results without following or retrying', async () => {
@@ -301,5 +315,111 @@ describe('HttpWordPressAdapter', () => {
     await expect(adapter.checkPublicReadback({ ...initialPost(), bodyHtml }))
       .rejects.toThrow('WordPress public REST text did not match the authenticated body');
     expect(calls).toBe(1);
+  });
+
+  it('uses a nonce only for public REST and verifies the exact base page URL', async () => {
+    const bodyHtml = '<p>fresh body</p>';
+    const seen: URL[] = [];
+    const adapter = new HttpWordPressAdapter({
+      siteOrigin: 'https://example.test', username: 'user', applicationPassword: 'secret',
+      fetch: async (input) => {
+        const url = new URL(String(input));
+        seen.push(url);
+        if (url.pathname.startsWith('/wp-json/')) {
+          if (!url.searchParams.has('_siteops_verify')) {
+            return new Response(JSON.stringify({ id: 42, content: { rendered: '<p>stale body</p>' } }), {
+              status: 200, headers: { 'content-type': 'application/json' },
+            });
+          }
+          return new Response(JSON.stringify({ id: 42, content: { rendered: bodyHtml } }), {
+            status: 200, headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (url.searchParams.has('_siteops_verify')) return new Response(null, { status: 301 });
+        return new Response('<html><head><link rel="canonical" href="https://example.test/article/"></head><body><p>fresh body</p></body></html>', {
+          status: 200, headers: { 'content-type': 'text/html' },
+        });
+      },
+    });
+
+    await expect(adapter.checkPublicReadback({ ...initialPost(), bodyHtml }))
+      .resolves.toMatchObject({ visibility: 'public', url: 'https://example.test/article/' });
+    expect(seen).toHaveLength(2);
+    expect(seen[0]?.searchParams.has('_siteops_verify')).toBe(true);
+    expect(seen[1]?.href).toBe('https://example.test/article/');
+  });
+
+  it('still rejects stale content returned for a nonce-bearing public REST request', async () => {
+    const adapter = new HttpWordPressAdapter({
+      siteOrigin: 'https://example.test', username: 'user', applicationPassword: 'secret',
+      fetch: async () => new Response(JSON.stringify({ id: 42, content: { rendered: '<p>stale body</p>' } }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }),
+    });
+
+    await expect(adapter.checkPublicReadback({ ...initialPost(), bodyHtml: '<p>fresh body</p>' }))
+      .rejects.toThrow('WordPress public REST text did not match the authenticated body');
+  });
+
+  it('rejects a canonical URL polluted with the verification nonce', async () => {
+    const bodyHtml = '<p>fresh body</p>';
+    let requestCount = 0;
+    const adapter = new HttpWordPressAdapter({
+      siteOrigin: 'https://example.test', username: 'user', applicationPassword: 'secret',
+      fetch: async () => {
+        requestCount += 1;
+        if (requestCount === 1) {
+          return new Response(JSON.stringify({ id: 42, content: { rendered: bodyHtml } }), {
+            status: 200, headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(`<html><head><link rel="canonical" href="https://example.test/article/?_siteops_verify=00000000-0000-4000-8000-000000000000"></head><body>${bodyHtml}</body></html>`, {
+          status: 200, headers: { 'content-type': 'text/html' },
+        });
+      },
+    });
+
+    await expect(adapter.checkPublicReadback({ ...initialPost(), bodyHtml }))
+      .rejects.toThrow('WordPress public page canonical did not match the authenticated post URL');
+  });
+
+  it('rejects an exact-page redirect without following, retrying, or falling back', async () => {
+    const bodyHtml = '<p>fresh body</p>';
+    let calls = 0;
+    const adapter = new HttpWordPressAdapter({
+      siteOrigin: 'https://example.test', username: 'user', applicationPassword: 'secret',
+      fetch: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return new Response(JSON.stringify({ id: 42, content: { rendered: bodyHtml } }), {
+            status: 200, headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(null, { status: 301, headers: { location: 'https://example.test/article/' } });
+      },
+    });
+
+    await expect(adapter.checkPublicReadback({ ...initialPost(), bodyHtml }))
+      .rejects.toThrow('WordPress redirects are not allowed');
+    expect(calls).toBe(2);
+  });
+
+  it('rejects stale content returned by a 200 exact-page response', async () => {
+    const bodyHtml = '<p>fresh body</p>';
+    const responses = [
+      new Response(JSON.stringify({ id: 42, content: { rendered: bodyHtml } }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }),
+      new Response('<html><head><link rel="canonical" href="https://example.test/article/"></head><body><p>stale body</p></body></html>', {
+        status: 200, headers: { 'content-type': 'text/html' },
+      }),
+    ];
+    const adapter = new HttpWordPressAdapter({
+      siteOrigin: 'https://example.test', username: 'user', applicationPassword: 'secret',
+      fetch: async () => responses.shift() ?? new Response(null, { status: 500 }),
+    });
+
+    await expect(adapter.checkPublicReadback({ ...initialPost(), bodyHtml }))
+      .rejects.toThrow('WordPress public page did not contain the approved visible body text');
   });
 });
