@@ -1,5 +1,9 @@
 # Release status
 
+The v0.1.2 patch adds source-owned pipeline inspection and weekly Skill execution with atomic four-call reservations, a shared daily hard cap of ten, cross-process exclusion, unresolved-claim stops, bounded deadlines and a closed private-state report schema. Local checks, 211 tests, Chromium, live read-only inspection and a state-preserving service restart passed. The existing operator automation uses the new commands; article writes and Skill activation remain manual. The first scheduled live weekly Skill run is still pending its future eligibility gates. See [pipeline.md](pipeline.md) and [validation.md](validation.md).
+
+## v0.1.1 baseline
+
 The v0.1.1 patch adds safe proposal diagnostics, policy-derived output guidance, bounded Gutenberg paragraph editing, and a 180-second native editorial deadline. Local lint, typecheck, build, 194 tests across 15 files, the Chromium journey, source inventory, independent security review and outcome verification passed. Two real editorial proposals remain pending human approval; this patch performed no additional production WordPress writes. Historical failed records remain unchanged. See [validation.md](validation.md) for the read-only reconciliation evidence and its limits.
 
 ## v0.1.0 baseline

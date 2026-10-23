@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2 — 2026-10-23
+
+- Add source-owned read-only pipeline inspection and bounded weekly Skill candidate/replay commands, without private helper imports or production path defaults.
+- Reserve the weekly claim, four model calls, and cooldown atomically; serialize article creation against running weekly work across processes.
+- Enforce a shared daily hard cap of ten for article and Skill calls, rejecting malformed persisted limits and counters.
+- Block new weekly runs behind unresolved running or malformed claims from any week; preserve failed and unknown outcomes without automatic retry or refunds.
+- Enforce a ten-minute lifecycle deadline and two-minute call deadline, discard late results, and retain human approval for articles and Skill activation.
+- Project private state through a closed report schema with bounded observed queries, explicit audience hypotheses, independent live page totals, and unknown measurement states.
+- Verify the complete synthetic proposal-only pipeline, two-process contention, failure cases, private-data canaries, and unchanged live records. The first scheduled live weekly Skill run remains pending its future eligibility gates.
+
 ## 0.1.1 — 2026-10-23
 
 - Add closed, safe proposal failure codes and actionable task messages without exposing raw model output or exception details.

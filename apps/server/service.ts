@@ -13,6 +13,7 @@ import {
 } from './agent/index.js';
 import type { DataProvider } from './data/provider.js';
 import { rankOpportunities } from './opportunities.js';
+import { HARD_AGENT_RUN_CAP, hasBlockingWeeklyJob, readAgentRunLimit, readSkillCallCount } from './pipeline-guards.js';
 import { assertSafeProposalHtml } from './security/html.js';
 import { Store } from './store.js';
 import { nextSearchDate, observeExperiment } from './experiments.js';
@@ -161,27 +162,36 @@ export class SiteOpsService {
   }
 
   async createTask(postId: number): Promise<Task> {
-    const snapshot = this.requireSnapshot();
-    const opportunity = rankOpportunities(snapshot, this.settings().maxOpportunities).find((item) => item.postId === postId);
-    if (!opportunity) throw new SiteOpsError('opportunity_not_found', 'No current eligible opportunity exists for this post.', 404);
-    const active = this.options.store.list<Task>('task').filter((task) => ['queued', 'running', 'waiting_approval'].includes(task.status));
-    if (active.some((task) => task.postId === postId)) throw new SiteOpsError('duplicate_active_task', 'An active task already exists for this post.');
-    if (this.options.writerStorage.listProposals().some((proposal) => proposal.postId === postId && proposal.status === 'review_required')) {
-      throw new SiteOpsError('post_review_required', 'This post has an unresolved write outcome and cannot accept another task.');
-    }
-    const settings = this.settings();
-    if (active.length >= settings.maxPendingTasks) throw new SiteOpsError('pending_task_limit', 'The pending task limit has been reached.', 429);
-    const today = taipeiDate(this.now());
-    const todayRuns = this.options.store.list<Task>('task').filter((task) => taipeiDate(new Date(task.createdAt)) === today).length;
-    const skillCalls = this.options.store.get<number>('skill_calls', today) ?? 0;
-    if (todayRuns + skillCalls >= settings.maxAgentRunsPerDay) throw new SiteOpsError('daily_agent_limit', 'The daily combined agent run limit has been reached.', 429);
-    const skill = this.options.skills.active();
-    const timestamp = this.now().toISOString();
-    const task: Task = {
-      id: crypto.randomUUID(), postId, title: opportunity.title, status: 'queued', stage: 'Queued for proposal generation',
-      createdAt: timestamp, updatedAt: timestamp, skillVersion: skill.id, snapshotId: snapshot.id,
-    };
-    this.saveTask(task);
+    const task = this.options.store.transaction(() => {
+      const snapshot = this.requireSnapshot();
+      const settings = this.settings();
+      const opportunity = rankOpportunities(snapshot, settings.maxOpportunities).find((item) => item.postId === postId);
+      if (!opportunity) throw new SiteOpsError('opportunity_not_found', 'No current eligible opportunity exists for this post.', 404);
+      const active = this.options.store.list<Task>('task').filter((item) => ['queued', 'running', 'waiting_approval'].includes(item.status));
+      if (active.some((item) => item.postId === postId)) throw new SiteOpsError('duplicate_active_task', 'An active task already exists for this post.');
+      if (this.options.writerStorage.listProposals().some((proposal) => proposal.postId === postId && proposal.status === 'review_required')) {
+        throw new SiteOpsError('post_review_required', 'This post has an unresolved write outcome and cannot accept another task.');
+      }
+      if (active.length >= settings.maxPendingTasks) throw new SiteOpsError('pending_task_limit', 'The pending task limit has been reached.', 429);
+      if (hasBlockingWeeklyJob(this.options.store.db)) {
+        throw new SiteOpsError('weekly_skill_running', 'Weekly skill evaluation is running; task creation is temporarily unavailable.', 409);
+      }
+      const timestamp = this.now().toISOString();
+      const today = taipeiDate(new Date(timestamp));
+      const todayRuns = this.options.store.list<Task>('task').filter((item) => taipeiDate(new Date(item.createdAt)) === today).length;
+      const limit = readAgentRunLimit(settings);
+      const skillCalls = readSkillCallCount(this.options.store.get<unknown>('skill_calls', today));
+      if (limit === undefined || skillCalls === undefined || todayRuns + skillCalls >= limit) {
+        throw new SiteOpsError('daily_agent_limit', 'The daily combined agent run limit has been reached.', 429);
+      }
+      const skill = this.options.skills.active();
+      const queued: Task = {
+        id: crypto.randomUUID(), postId, title: opportunity.title, status: 'queued', stage: 'Queued for proposal generation',
+        createdAt: timestamp, updatedAt: timestamp, skillVersion: skill.id, snapshotId: snapshot.id,
+      };
+      this.saveTask(queued);
+      return queued;
+    });
     this.emitEvent(task.id, 'task.queued', 'Proposal task queued.');
     this.queue.push(task.id);
     queueMicrotask(() => void this.drain());
@@ -296,10 +306,14 @@ export class SiteOpsService {
     }
     for (const key of ['maxOpportunities', 'maxWeeklyProposals', 'maxPendingTasks', 'maxAgentRunsPerDay'] as const) {
       if (key in patch) {
-        const cap = key === 'maxOpportunities' ? 10 : key === 'maxWeeklyProposals' ? 3 : 100;
+        const cap = key === 'maxOpportunities' ? 10 : key === 'maxWeeklyProposals' ? 3
+          : key === 'maxAgentRunsPerDay' ? HARD_AGENT_RUN_CAP : 100;
         if (!Number.isInteger(patch[key]) || (patch[key] as number) < 1 || (patch[key] as number) > cap) throw new SiteOpsError('invalid_settings', `${key} must be an integer from 1 to ${cap}.`, 400);
         next[key] = patch[key] as number;
       }
+    }
+    if (readAgentRunLimit(next) === undefined) {
+      throw new SiteOpsError('invalid_settings', `maxAgentRunsPerDay must be an integer from 1 to ${HARD_AGENT_RUN_CAP}.`, 400);
     }
     this.options.store.put('settings', SETTINGS_ID, next);
     return next;

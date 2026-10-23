@@ -436,7 +436,7 @@ describe('CodexAgentAdapter', () => {
     expect(onEvent).toHaveBeenCalledWith('agent.completed', expect.any(String));
     const initialize = runtime.launches[1]?.server?.messages.find((message) => message.method === 'initialize');
     expect(initialize?.params).toEqual({
-      clientInfo: { name: 'yolo_siteops', title: 'YOLO SiteOps', version: '0.1.1' },
+      clientInfo: { name: 'yolo_siteops', title: 'YOLO SiteOps', version: '0.1.2' },
       capabilities: { experimentalApi: true, requestAttestation: false },
     });
     const configRead = runtime.launches[1]?.server?.messages.find((message) => message.method === 'config/read');

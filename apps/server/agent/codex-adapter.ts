@@ -431,7 +431,7 @@ export class CodexAgentAdapter implements AgentAdapter {
         }
       };
       await rpc(activeConnection.request('initialize', {
-        clientInfo: { name: 'yolo_siteops', title: 'YOLO SiteOps', version: '0.1.1' },
+        clientInfo: { name: 'yolo_siteops', title: 'YOLO SiteOps', version: '0.1.2' },
         capabilities: { experimentalApi: true, requestAttestation: false },
       }));
       try {

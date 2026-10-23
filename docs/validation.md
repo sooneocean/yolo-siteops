@@ -1,4 +1,4 @@
-# Validation record — v0.1.1
+# Validation record — v0.1.2
 
 Recorded on 2026-10-23. Credentials, production post identifiers and bodies, analytics data, session material, SQLite files, and raw model output are excluded from this repository.
 
@@ -35,3 +35,9 @@ Two real editorial tasks produced new pending proposals without approval or Word
 An initial operator verification recorded `review_required` after an incomplete read-back. That record remains unchanged. Subsequent separate read-only checks verified all three guarded WordPress hashes and unchanged existing proposals, backups and receipts. No model or mutation was replayed to complete those checks. This validates the recorded proposal-only workflow, not production publication or traffic impact.
 
 Independent outcome verification confirmed the local artifacts, SQLite state, byte-preservation contract and new-path regressions, rerunning 63 targeted tests and typecheck without network, model calls or WordPress writes. It did not independently repeat the remote read-backs or the complete browser journey.
+
+## v0.1.2 operations pipeline
+
+Local lint, typecheck, build, 211 tests across 19 files, Chromium E2E and the source inventory passed. The integration pipeline uses real scheduler/service/storage/Skill components with synthetic providers and deterministic agents. It completes synchronization, three pending proposals, one reflection and three replay cases, leaving the active Skill and WordPress state unchanged. Two child processes contend for the same weekly/task budget. Negative cases cover hard limits, malformed counters, prior-week interrupted claims, partial/future data, unsafe runtime configuration, ignored abort signals, late results, and sensitive-field canaries.
+
+The live read-only status and weekly preflight commands passed their inspection contract. Preflight correctly declined a run outside Monday timing and without four-call capacity. A controlled restart loaded the quota protections without changing any database record or event. The existing operator automation was updated in place to use the source-owned commands, preserving its schedule, identity and manual approval boundaries. No model calls, Skill activation or WordPress writes occurred in this acceptance. The first scheduled live weekly Skill run remains unrun; synthetic replay cannot establish future execution or traffic improvement.

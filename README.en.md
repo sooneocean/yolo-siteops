@@ -4,9 +4,11 @@ YOLO SiteOps is a local-first WordPress operations workbench. It reads evidence,
 
 ## Status
 
-v0.1.1 repairs proposal diagnostics, Gutenberg paragraph preservation, and editorial deadlines, with 194 tests and the Chromium journey passing locally. Two real articles produced pending proposals without new production writes. The v0.1.0 records for fresh installation, real Codex, disposable WordPress apply/restore, Skill replay, and one human-approved production acceptance remain available. The verified Codex CLI is `0.163.0`.
+v0.1.2 adds read-only operations inspection and a bounded weekly Skill pipeline, with 211 tests and the Chromium journey passing locally, including cross-process quota contention and deadline regressions. Live read-only checks and a controlled restart preserved all records. Articles still require individual approval; the first scheduled live weekly Skill run awaits Monday eligibility gates. The v0.1.1 proposal repair and v0.1.0 records for real Codex, disposable WordPress apply/restore, Skill replay, and one human-approved production acceptance remain available. The verified Codex CLI is `0.163.0`.
 
 See [`docs/validation.md`](docs/validation.md) for scope and limitations. These results prove the recorded MVP workflows; ranking, traffic, CTR, GEO, and ROI outcomes require later measurement.
+
+See [`docs/pipeline.md`](docs/pipeline.md) for daily synchronization, weekly proposals, read-only inspection, and bounded Skill candidate/replay operations. Article writes require individual approval, and passing replay does not automatically activate a Skill.
 
 ## Requirements and demo
 

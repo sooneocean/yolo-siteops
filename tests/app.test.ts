@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
-import type { AgentAdapter, ChangeProposal, Task } from '../packages/contracts.js';
+import type { AgentAdapter, ChangeProposal, Settings, Task } from '../packages/contracts.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../apps/server/app.js';
 import { DemoAgentAdapter } from '../apps/server/agent/index.js';
@@ -157,10 +157,11 @@ describe('SiteOps HTTP integration', () => {
     expect(badSettings.status).toBe(400);
     expect(await badSettings.json()).toEqual({ error: { code: 'invalid_settings_key', message: 'Settings patch contains an unsupported field.' } });
 
-    for (const patch of [{ dailyTime: '9:00' }, { weeklyTime: 'Monday 09:30' }, { maxOpportunities: 11 }, { maxWeeklyProposals: 4 }]) {
+    for (const patch of [{ dailyTime: '9:00' }, { weeklyTime: 'Monday 09:30' }, { maxOpportunities: 11 }, { maxWeeklyProposals: 4 }, { maxAgentRunsPerDay: 11 }]) {
       const invalid = await api(fixture.origin, auth, '/api/settings', { method: 'PATCH', body: JSON.stringify(patch) });
       expect(invalid.status).toBe(400);
     }
+    expect(fixture.service.state().settings.maxAgentRunsPerDay).toBe(10);
   });
 
   it('rejects a waiting proposal when its task is cancelled and blocks unresolved posts', async () => {
@@ -207,6 +208,26 @@ describe('SiteOps HTTP integration', () => {
 
     fixture.store.put('skill_calls', '2026-10-23', 10);
     await expect(fixture.service.createTask(fixture.service.state().opportunities[1].postId)).rejects.toMatchObject({ code: 'daily_agent_limit' });
+
+    const current = fixture.store.get<Settings>('settings', 'current')!;
+    fixture.store.put('settings', 'current', { ...current, maxAgentRunsPerDay: 11 });
+    fixture.store.remove('skill_calls', '2026-10-23');
+    const beforeTasks = fixture.store.list<Task>('task').length;
+    await expect(fixture.service.createTask(fixture.service.state().opportunities[1].postId)).rejects.toMatchObject({ code: 'daily_agent_limit' });
+    expect(fixture.store.list<Task>('task')).toHaveLength(beforeTasks);
+    expect(fixture.store.get('skill_calls', '2026-10-23')).toBeUndefined();
+
+    fixture.store.put('settings', 'current', current);
+    for (const invalidCounter of [-1, '1']) {
+      fixture.store.put('skill_calls', '2026-10-23', invalidCounter);
+      await expect(fixture.service.createTask(fixture.service.state().opportunities[1].postId)).rejects.toMatchObject({ code: 'daily_agent_limit' });
+      expect(fixture.store.list<Task>('task')).toHaveLength(beforeTasks);
+      expect(fixture.store.get('skill_calls', '2026-10-23')).toBe(invalidCounter);
+    }
+    fixture.store.remove('skill_calls', '2026-10-23');
+    fixture.store.put('operator_job', 'weekly-skill:2026-10-16', { status: 'running' });
+    await expect(fixture.service.createTask(fixture.service.state().opportunities[1].postId)).rejects.toMatchObject({ code: 'weekly_skill_running' });
+    expect(fixture.store.list<Task>('task')).toHaveLength(beforeTasks);
   });
 });
 

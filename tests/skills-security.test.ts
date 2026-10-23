@@ -33,6 +33,35 @@ const completedTask = (): Task => ({
 });
 
 describe('durable skill claims', () => {
+  it('rejects an unsafe persisted cap or malformed counter before any reflection or claim mutation', async () => {
+    const [store] = await sharedStores();
+    store.put('settings', 'current', { ...settings, maxAgentRunsPerDay: 11 });
+    store.put('task', 'completed-task', completedTask());
+    const reflect = vi.fn(async () => ({
+      content: 'Preserve facts and add one bounded reader-facing improvement supported by the supplied evidence only.',
+      rationale: 'This must never run with an invalid quota state.',
+    }));
+    const service = new SkillService(store, { agent: { run: vi.fn() } as unknown as AgentAdapter, mode: 'live', reflect, now });
+    await expect(service.propose()).rejects.toMatchObject({ code: 'daily_agent_limit' });
+    expect(reflect).not.toHaveBeenCalled();
+    expect(store.get('skill_reflection', 'lastAttempt')).toBeUndefined();
+    expect(store.get('skill_calls', '2026-10-23')).toBeUndefined();
+
+    store.put('settings', 'current', settings);
+    for (const invalidCounter of [-1, '1']) {
+      store.put('skill_calls', '2026-10-23', invalidCounter);
+      await expect(service.propose()).rejects.toMatchObject({ code: 'daily_agent_limit' });
+      expect(reflect).not.toHaveBeenCalled();
+      expect(store.get('skill_reflection', 'lastAttempt')).toBeUndefined();
+      expect(store.get('skill_calls', '2026-10-23')).toBe(invalidCounter);
+    }
+    store.remove('skill_calls', '2026-10-23');
+    store.put('operator_job', 'weekly-skill:2026-10-16', { status: 'running' });
+    await expect(service.propose()).rejects.toMatchObject({ code: 'weekly_skill_running' });
+    expect(reflect).not.toHaveBeenCalled();
+    expect(store.get('skill_reflection', 'lastAttempt')).toBeUndefined();
+  });
+
   it('allows only one weekly reflection across two Store instances and reserves its call atomically', async () => {
     const [first, second] = await sharedStores();
     first.put('settings', 'current', settings);

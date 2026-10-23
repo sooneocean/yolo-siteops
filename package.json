@@ -1,6 +1,6 @@
 {
   "name": "yolo-siteops",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Local-first WordPress operations with evidence, Codex, and human-approved changes",
   "license": "MIT",
@@ -16,6 +16,8 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:wordpress": "tsx scripts/wordpress-e2e.ts",
+    "pipeline:status": "tsx scripts/pipeline-status.ts",
+    "pipeline:skill": "tsx scripts/weekly-skill.ts",
     "check": "npm run lint && npm run build && npm test",
     "smoke:codex": "tsx scripts/codex-smoke.ts",
     "check:release": "tsx scripts/check-release.ts"
