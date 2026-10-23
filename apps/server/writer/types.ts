@@ -1,4 +1,4 @@
-import type { ChangeProposal, ReconciliationReview } from '../../../packages/contracts.js';
+import type { ChangeProposal, ReconciliationReview, ReconciliationTransform } from '../../../packages/contracts.js';
 
 export type ApprovalKind = 'apply' | 'rollback';
 
@@ -58,10 +58,12 @@ export interface WriterReceipt {
   afterHash?: string;
   createdAt: string;
   message?: string;
+  reconciliationTransform?: ReconciliationTransform;
 }
 
 export interface ReconciliationAcceptance {
   id: string;
+  reviewId: string;
   proposalId: string;
   postId: number;
   sessionId: string;
@@ -70,7 +72,7 @@ export interface ReconciliationAcceptance {
   originalApplyReceiptId: string;
   originalReviewReason: string;
   reviewedActualHash: string;
-  transform: 'strip_bare_p_v1';
+  transform: ReconciliationTransform;
   createdAt: string;
   expiresAt: string;
   consumedAt?: string;

@@ -1,6 +1,6 @@
 {
   "name": "yolo-siteops",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Local-first WordPress operations with evidence, Codex, and human-approved changes",
   "license": "MIT",

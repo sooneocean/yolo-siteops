@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import type {
-  AgentAdapter, AppState, ChangeProposal, Connection, Experiment, Settings, SkillVersion, Snapshot, Task, TaskEvent, TaskFailureCode,
+  AgentAdapter, AppState, ChangeProposal, Connection, Experiment, ReconciliationTransform, Settings, SkillVersion, Snapshot, Task, TaskEvent, TaskFailureCode,
 } from '../../packages/contracts.js';
 import {
   AgentBlockError,
@@ -249,8 +249,8 @@ export class SiteOpsService {
     return this.options.writer.prepareReconciliation({ proposalId, sessionId });
   }
 
-  async acceptReconciliation(proposalId: string, sessionId: string, reviewId: string, reviewedActualHash: string): Promise<ReconciliationAcceptance> {
-    return this.options.writer.acceptReconciliation({ proposalId, sessionId, reviewId, reviewedActualHash });
+  async acceptReconciliation(proposalId: string, sessionId: string, reviewId: string, reviewedActualHash: string, expectedTransform: ReconciliationTransform): Promise<ReconciliationAcceptance> {
+    return this.options.writer.acceptReconciliation({ proposalId, sessionId, reviewId, reviewedActualHash, expectedTransform });
   }
 
   async reconcileProposal(proposalId: string, sessionId: string, acceptanceId: string): Promise<WriterReceipt> {
@@ -465,8 +465,42 @@ export class SiteOpsService {
   private async repairReconciliation(proposal: ChangeProposal): Promise<void> {
     const receipt = await this.options.writerStorage.getReceipt('reconcile', proposal.id);
     if (!receipt || receipt.status !== 'verified_transformed' || receipt.proposalId !== proposal.id
-      || receipt.afterHash !== proposal.afterHash || receipt.createdAt !== proposal.reconciledAt) {
+      || receipt.postId !== proposal.postId || receipt.beforeHash !== proposal.patchHash
+      || receipt.beforeHash !== proposal.originalPatchHash || receipt.afterHash !== proposal.afterHash
+      || receipt.createdAt !== proposal.reconciledAt) {
       throw new SiteOpsError('reconciliation_repair_conflict', 'Verified transformation is missing its immutable reconciliation receipt.', 500);
+    }
+    const original = await this.options.writerStorage.getReceipt('apply', proposal.id);
+    if (!original || original.id !== proposal.originalApplyReceiptId || original.operation !== 'apply'
+      || original.status !== 'review_required' || original.proposalId !== proposal.id || original.postId !== proposal.postId
+      || original.beforeHash !== proposal.baseHash || original.afterHash !== undefined
+      || original.message !== proposal.originalReviewReason) {
+      throw new SiteOpsError('reconciliation_repair_conflict', 'Verified transformation is missing its immutable original apply receipt.', 500);
+    }
+    if (receipt.reconciliationTransform === undefined) {
+      if (proposal.reconciliationTransform !== 'strip_bare_p_v1'
+        || receipt.message !== 'Verified exact WordPress strip_bare_p_v1 formatting transformation without another write.') {
+        throw new SiteOpsError('reconciliation_repair_conflict', 'Legacy reconciliation receipt is not eligible for repair.', 500);
+      }
+    } else {
+      const acceptance = proposal.reconciliationAcceptanceId
+        ? await this.options.writerStorage.getReconciliationAcceptance?.(proposal.reconciliationAcceptanceId) : undefined;
+      const review = proposal.reconciliationReviewId
+        ? await this.options.writerStorage.getReconciliationReview?.(proposal.reconciliationReviewId) : undefined;
+      if (!acceptance || !review || acceptance.reviewId !== review.id
+        || receipt.reconciliationTransform !== proposal.reconciliationTransform
+        || receipt.reconciliationTransform !== acceptance.transform || review.transform !== acceptance.transform
+        || acceptance.proposalId !== proposal.id || review.proposalId !== proposal.id
+        || acceptance.postId !== proposal.postId || review.postId !== proposal.postId
+        || acceptance.sessionId !== receipt.sessionId || review.sessionId !== receipt.sessionId
+        || acceptance.baseHash !== proposal.baseHash || review.baseHash !== proposal.baseHash
+        || acceptance.originalPatchHash !== proposal.patchHash || review.originalPatchHash !== proposal.patchHash
+        || acceptance.originalApplyReceiptId !== original.id || review.originalApplyReceiptId !== original.id
+        || acceptance.originalReviewReason !== proposal.originalReviewReason || review.originalReviewReason !== proposal.originalReviewReason
+        || acceptance.reviewedActualHash !== proposal.afterHash || review.reviewedActualHash !== proposal.afterHash
+        || acceptance.consumedAt !== proposal.reconciledAt) {
+        throw new SiteOpsError('reconciliation_repair_conflict', 'Typed reconciliation bindings are no longer valid.', 500);
+      }
     }
     const task = this.options.store.get<Task>('task', proposal.taskId);
     const snapshot = task ? this.options.store.get<Snapshot>('snapshot', task.snapshotId) : undefined;

@@ -1,6 +1,7 @@
 import type { ChangeProposal, ReconciliationReview } from '../../packages/contracts.js';
 import { Store } from './store.js';
 import type { ApprovalRecord, FinalizeReconciliationInput, ReconciliationAcceptance, WriterBackup, WriterReceipt, WriterStorage } from './writer/types.js';
+import { applyReconciliationTransform, isReconciliationTransform } from './writer/transform-helper.js';
 
 const KINDS = {
   proposal: 'proposal', approval: 'writer_approval', backup: 'writer_backup', receipt: 'writer_receipt',
@@ -52,18 +53,31 @@ export class SQLiteWriterStorage implements WriterStorage {
       const acceptance = this.store.get<ReconciliationAcceptance>(KINDS.reconciliationAcceptance, input.acceptance.id);
       const proposal = this.store.get<ChangeProposal>(KINDS.proposal, input.acceptance.proposalId);
       const original = this.store.get<WriterReceipt>(KINDS.receipt, `apply:${input.acceptance.proposalId}`);
+      const review = acceptance?.reviewId
+        ? this.store.get<ReconciliationReview>(KINDS.reconciliationReview, acceptance.reviewId) : undefined;
       if (!acceptance || acceptance.consumedAt || acceptance.expiresAt <= input.reconciledAt
         || JSON.stringify(acceptance) !== JSON.stringify(input.acceptance)
-        || acceptance.transform !== 'strip_bare_p_v1'
+        || !isReconciliationTransform(acceptance.transform) || !review
+        || review.id !== acceptance.reviewId || review.proposalId !== acceptance.proposalId
+        || review.postId !== acceptance.postId || review.sessionId !== acceptance.sessionId
+        || review.baseHash !== acceptance.baseHash || review.originalPatchHash !== acceptance.originalPatchHash
+        || review.originalApplyReceiptId !== acceptance.originalApplyReceiptId
+        || review.originalReviewReason !== acceptance.originalReviewReason
+        || review.reviewedActualHash !== acceptance.reviewedActualHash || review.transform !== acceptance.transform
+        || review.actualBodyHtml !== applyReconciliationTransform(acceptance.transform, proposal?.afterHtml ?? '')
         || !proposal || proposal.status !== 'review_required'
         || proposal.postId !== acceptance.postId || proposal.baseHash !== acceptance.baseHash
         || proposal.patchHash !== acceptance.originalPatchHash || proposal.error !== acceptance.originalReviewReason
+        || proposal.reconciliationTransform !== undefined
         || !original || original.id !== acceptance.originalApplyReceiptId || original.status !== 'review_required'
         || original.operation !== 'apply' || original.proposalId !== proposal.id || original.postId !== proposal.postId
+        || !original.sessionId || original.beforeHash !== proposal.baseHash
+        || original.afterHash !== undefined || original.message !== acceptance.originalReviewReason
         || input.receipt.operation !== 'reconcile' || input.receipt.status !== 'verified_transformed'
         || input.receipt.proposalId !== proposal.id || input.receipt.postId !== proposal.postId
         || input.receipt.sessionId !== acceptance.sessionId || input.receipt.beforeHash !== acceptance.originalPatchHash
-        || input.receipt.afterHash !== acceptance.reviewedActualHash || input.receipt.createdAt !== input.reconciledAt) {
+        || input.receipt.afterHash !== acceptance.reviewedActualHash || input.receipt.createdAt !== input.reconciledAt
+        || input.receipt.reconciliationTransform !== acceptance.transform) {
         throw new Error('Reconciliation acceptance bindings are no longer valid');
       }
       if (this.store.get<WriterReceipt>(KINDS.receipt, `reconcile:${proposal.id}`)) {
@@ -77,6 +91,7 @@ export class SQLiteWriterStorage implements WriterStorage {
         ...proposal, status: 'verified_transformed', afterHash: acceptance.reviewedActualHash,
         originalReviewReason: acceptance.originalReviewReason, originalApplyReceiptId: acceptance.originalApplyReceiptId,
         originalPatchHash: acceptance.originalPatchHash, reconciliationTransform: acceptance.transform,
+        reconciliationReviewId: acceptance.reviewId, reconciliationAcceptanceId: acceptance.id,
         reconciledAt: input.reconciledAt, reviewedActualHash: acceptance.reviewedActualHash,
       };
       this.store.put(KINDS.proposal, proposal.id, reconciled);

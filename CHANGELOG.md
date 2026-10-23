@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3 — 2026-10-23
+
+- Reconcile the exact WordPress bare-paragraph removal plus doubled-LF format without another content write; retain the original transformation unchanged.
+- Reject unsupported markup, whitespace-sensitive content, malformed nesting, and any byte changes outside the selected versioned transformation.
+- Bind the displayed transformation and actual state hash through review, acceptance, atomic receipt persistence, replay and restart repair.
+- Preserve immutable apply receipts, backups and completed legacy paragraph-format acceptances; reject cross-transform tampering and stale review state.
+- Show the precise formatting change in the workbench and verify both recovery journeys without an apply request.
+- Verify 239 tests, two browser journeys, independent security review and a single operator-approved production reconciliation. The remaining two proposals stay pending; production writes still require individual approval.
+
 ## 0.1.2 — 2026-10-23
 
 - Add source-owned read-only pipeline inspection and bounded weekly Skill candidate/replay commands, without private helper imports or production path defaults.

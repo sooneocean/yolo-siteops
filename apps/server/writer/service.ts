@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
-import type { ChangeProposal, ReconciliationReview } from '../../../packages/contracts.js';
+import type { ChangeProposal, ReconciliationReview, ReconciliationTransform } from '../../../packages/contracts.js';
 import { assertSafeProposalHtml, normalizeHtmlText } from '../security/html.js';
 import { hashPostState } from './hash.js';
 import { acquireWriterLock, type WriterLockOptions } from './lock.js';
+import { applyReconciliationTransform, isReconciliationTransform, matchingReconciliationTransforms } from './transform-helper.js';
 import {
   UnknownWordPressWriteError,
   type ApprovalKind,
@@ -223,7 +224,7 @@ export class WriterService {
       throw new WriterServiceError('proposal_not_review_required', 'Only an unresolved review-required apply may be reconciled');
     }
     const original = await this.storage.getReceipt('apply', proposal.id);
-    if (!original || original.status !== 'review_required') {
+    if (!original || !this.originalReceiptMatches(original, proposal)) {
       throw new WriterServiceError('original_receipt_required', 'The original review-required apply receipt is missing');
     }
     const backup = await this.requireBackup(proposal.id);
@@ -231,8 +232,8 @@ export class WriterService {
     try {
       const actual = await this.adapter.getPostForEdit(proposal.postId);
       this.validateReconciliationPost(proposal, backup, actual);
-      const expectedActualBody = proposal.afterHtml.replace(/<\/?p>/g, '');
-      if (actual.bodyHtml !== expectedActualBody) {
+      const transforms = matchingReconciliationTransforms(proposal.afterHtml, actual.bodyHtml);
+      if (transforms.length !== 1) {
         throw new WriterServiceError('unsupported_wordpress_transform', 'Actual WordPress body is not the exact approved bare-p transformation');
       }
       const readback = await this.adapter.checkPublicReadback(actual);
@@ -242,7 +243,7 @@ export class WriterService {
         id: crypto.randomUUID(), proposalId: proposal.id, postId: proposal.postId, sessionId: args.sessionId,
         baseHash: proposal.baseHash, originalPatchHash: proposal.patchHash, originalApplyReceiptId: original.id,
         originalReviewReason: proposal.error, reviewedActualHash: hashPostState(actual), actualBodyHtml: actual.bodyHtml,
-        transform: 'strip_bare_p_v1', createdAt: this.now().toISOString(),
+        transform: transforms[0], createdAt: this.now().toISOString(),
       };
       if (!this.storage.saveReconciliationReview) throw new WriterServiceError('reconciliation_storage_unavailable', 'Reconciliation storage is unavailable', 503);
       await this.storage.saveReconciliationReview(review);
@@ -252,16 +253,22 @@ export class WriterService {
     }
   }
 
-  async acceptReconciliation(args: { reviewId: string; proposalId: string; sessionId: string; reviewedActualHash: string; expiresInMs?: number }): Promise<ReconciliationAcceptance> {
+  async acceptReconciliation(args: { reviewId: string; proposalId: string; sessionId: string; reviewedActualHash: string; expectedTransform: ReconciliationTransform; expiresInMs?: number }): Promise<ReconciliationAcceptance> {
     if (!this.storage.getReconciliationReview || !this.storage.insertReconciliationAcceptance) {
       throw new WriterServiceError('reconciliation_storage_unavailable', 'Reconciliation storage is unavailable', 503);
     }
     const review = await this.storage.getReconciliationReview(args.reviewId);
     const proposal = await this.requireProposal(args.proposalId);
+    const original = await this.storage.getReceipt('apply', proposal.id);
     if (!review || review.proposalId !== proposal.id || review.sessionId !== args.sessionId
       || review.reviewedActualHash !== args.reviewedActualHash || proposal.status !== 'review_required'
       || proposal.baseHash !== review.baseHash || proposal.patchHash !== review.originalPatchHash
-      || proposal.error !== review.originalReviewReason) {
+      || proposal.error !== review.originalReviewReason || proposal.postId !== review.postId
+      || review.transform !== args.expectedTransform || !isReconciliationTransform(args.expectedTransform)
+      || review.actualBodyHtml !== applyReconciliationTransform(args.expectedTransform, proposal.afterHtml)
+      || proposal.reconciliationTransform !== undefined
+      || !original || original.id !== review.originalApplyReceiptId
+      || !this.originalReceiptMatches(original, proposal)) {
       throw new WriterServiceError('invalid_reconciliation_review', 'Reconciliation acceptance does not match the reviewed state', 403);
     }
     const expiresInMs = args.expiresInMs ?? 10 * 60 * 1000;
@@ -270,7 +277,7 @@ export class WriterService {
     }
     const now = this.now();
     const acceptance: ReconciliationAcceptance = {
-      id: crypto.randomUUID(), proposalId: proposal.id, postId: proposal.postId, sessionId: args.sessionId,
+      id: crypto.randomUUID(), reviewId: review.id, proposalId: proposal.id, postId: proposal.postId, sessionId: args.sessionId,
       baseHash: review.baseHash, originalPatchHash: review.originalPatchHash,
       originalApplyReceiptId: review.originalApplyReceiptId, originalReviewReason: review.originalReviewReason,
       reviewedActualHash: review.reviewedActualHash, transform: review.transform, createdAt: now.toISOString(),
@@ -282,27 +289,34 @@ export class WriterService {
 
   async reconcile(args: { proposalId: string; acceptanceId: string; sessionId: string }): Promise<WriterReceipt> {
     const existing = await this.storage.getReceipt('reconcile', args.proposalId);
-    if (existing) return this.requireReceiptSession(existing, args.sessionId);
+    if (existing) return this.requireReconciliationReplay(existing, args.proposalId, args.sessionId);
     if (!this.storage.getReconciliationAcceptance || !this.storage.finalizeReconciliation) {
       throw new WriterServiceError('reconciliation_storage_unavailable', 'Reconciliation storage is unavailable', 503);
     }
     const release = await acquireWriterLock(`yolo-siteops:reconcile:${args.proposalId}`, this.lockOptions);
     try {
       const replay = await this.storage.getReceipt('reconcile', args.proposalId);
-      if (replay) return this.requireReceiptSession(replay, args.sessionId);
+      if (replay) return this.requireReconciliationReplay(replay, args.proposalId, args.sessionId);
       const proposal = await this.requireProposal(args.proposalId);
       const acceptance = await this.storage.getReconciliationAcceptance(args.acceptanceId);
+      const review = acceptance?.reviewId ? await this.storage.getReconciliationReview?.(acceptance.reviewId) : undefined;
+      const original = await this.storage.getReceipt('apply', proposal.id);
       if (!acceptance || acceptance.proposalId !== proposal.id || acceptance.sessionId !== args.sessionId
         || acceptance.consumedAt || Date.parse(acceptance.expiresAt) <= this.now().getTime()
-        || acceptance.postId !== proposal.postId || acceptance.transform !== 'strip_bare_p_v1'
+        || acceptance.postId !== proposal.postId || !isReconciliationTransform(acceptance.transform)
         || proposal.status !== 'review_required' || proposal.error !== acceptance.originalReviewReason
-        || proposal.patchHash !== acceptance.originalPatchHash || proposal.baseHash !== acceptance.baseHash) {
+        || proposal.patchHash !== acceptance.originalPatchHash || proposal.baseHash !== acceptance.baseHash
+        || proposal.reconciliationTransform !== undefined || !review
+        || !this.reviewMatchesAcceptance(review, acceptance)
+        || !original || original.id !== acceptance.originalApplyReceiptId
+        || !this.originalReceiptMatches(original, proposal)) {
         throw new WriterServiceError('invalid_reconciliation_acceptance', 'Reconciliation acceptance is invalid, expired, or already consumed', 403);
       }
       const backup = await this.requireBackup(proposal.id);
       const actual = await this.adapter.getPostForEdit(proposal.postId);
       this.validateReconciliationPost(proposal, backup, actual);
-      if (actual.bodyHtml !== proposal.afterHtml.replace(/<\/?p>/g, '') || hashPostState(actual) !== acceptance.reviewedActualHash) {
+      if (actual.bodyHtml !== applyReconciliationTransform(acceptance.transform, proposal.afterHtml)
+        || actual.bodyHtml !== review.actualBodyHtml || hashPostState(actual) !== acceptance.reviewedActualHash) {
         throw new WriterServiceError('reconciliation_drift', 'WordPress content changed after reconciliation review');
       }
       const readback = await this.adapter.checkPublicReadback(actual);
@@ -313,7 +327,8 @@ export class WriterService {
         id: crypto.randomUUID(), sessionId: args.sessionId, operation: 'reconcile', proposalId: proposal.id,
         postId: proposal.postId, status: 'verified_transformed', beforeHash: proposal.patchHash,
         afterHash: acceptance.reviewedActualHash, createdAt: at,
-        message: 'Verified exact WordPress strip_bare_p_v1 formatting transformation without another write.',
+        reconciliationTransform: acceptance.transform,
+        message: `Verified exact WordPress ${acceptance.transform} formatting transformation without another write.`,
       };
       await this.storage.finalizeReconciliation({ acceptance, receipt, reconciledAt: at });
       return receipt;
@@ -402,6 +417,50 @@ export class WriterService {
   private requireReceiptSession(receipt: WriterReceipt, sessionId: string): WriterReceipt {
     if (!sessionId || receipt.sessionId !== sessionId) {
       throw new WriterServiceError('receipt_session_mismatch', 'Receipt belongs to a different authenticated session', 403);
+    }
+    return receipt;
+  }
+
+  private originalReceiptMatches(receipt: WriterReceipt, proposal: ChangeProposal): boolean {
+    return receipt.operation === 'apply' && receipt.status === 'review_required'
+      && receipt.proposalId === proposal.id && receipt.postId === proposal.postId
+      && Boolean(receipt.sessionId) && receipt.beforeHash === proposal.baseHash
+      && receipt.afterHash === undefined && receipt.message === proposal.error;
+  }
+
+  private reviewMatchesAcceptance(review: ReconciliationReview, acceptance: ReconciliationAcceptance): boolean {
+    return review.id === acceptance.reviewId && review.proposalId === acceptance.proposalId
+      && review.postId === acceptance.postId && review.sessionId === acceptance.sessionId
+      && review.baseHash === acceptance.baseHash && review.originalPatchHash === acceptance.originalPatchHash
+      && review.originalApplyReceiptId === acceptance.originalApplyReceiptId
+      && review.originalReviewReason === acceptance.originalReviewReason
+      && review.reviewedActualHash === acceptance.reviewedActualHash && review.transform === acceptance.transform;
+  }
+
+  private async requireReconciliationReplay(receipt: WriterReceipt, proposalId: string, sessionId: string): Promise<WriterReceipt> {
+    this.requireReceiptSession(receipt, sessionId);
+    const proposal = await this.requireProposal(proposalId);
+    const original = await this.storage.getReceipt('apply', proposal.id);
+    const baseValid = proposal.status === 'verified_transformed' && receipt.operation === 'reconcile'
+      && receipt.status === 'verified_transformed' && receipt.proposalId === proposal.id
+      && receipt.postId === proposal.postId && receipt.beforeHash === proposal.patchHash
+      && receipt.beforeHash === proposal.originalPatchHash && receipt.afterHash === proposal.afterHash
+      && receipt.createdAt === proposal.reconciledAt && original?.id === proposal.originalApplyReceiptId
+      && Boolean(original) && this.originalReceiptMatches(original!, { ...proposal, error: proposal.originalReviewReason });
+    if (!baseValid) throw new WriterServiceError('reconciliation_replay_conflict', 'Stored reconciliation receipt bindings are invalid', 500);
+    if (receipt.reconciliationTransform === undefined) {
+      if (proposal.reconciliationTransform !== 'strip_bare_p_v1'
+        || receipt.message !== 'Verified exact WordPress strip_bare_p_v1 formatting transformation without another write.') {
+        throw new WriterServiceError('reconciliation_replay_conflict', 'Legacy reconciliation receipt is not eligible for replay', 500);
+      }
+      return receipt;
+    }
+    const acceptance = proposal.reconciliationAcceptanceId
+      ? await this.storage.getReconciliationAcceptance?.(proposal.reconciliationAcceptanceId) : undefined;
+    const review = acceptance?.reviewId ? await this.storage.getReconciliationReview?.(acceptance.reviewId) : undefined;
+    if (!acceptance || !review || receipt.reconciliationTransform !== proposal.reconciliationTransform
+      || receipt.reconciliationTransform !== acceptance.transform || !this.reviewMatchesAcceptance(review, acceptance)) {
+      throw new WriterServiceError('reconciliation_replay_conflict', 'Stored reconciliation receipt bindings are invalid', 500);
     }
     return receipt;
   }

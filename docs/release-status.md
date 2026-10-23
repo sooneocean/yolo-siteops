@@ -1,5 +1,9 @@
 # Release status
 
+The v0.1.3 patch adds exact double-LF formatting reconciliation without another WordPress content write. It binds the operator-visible transformation and actual state hash through review, acceptance, atomic receipt finalization, replay and restart repair. The original paragraph-only transformation and completed legacy receipts remain supported. Local lint, typecheck, build, 239 tests across 20 files, two browser journeys, independent security review and outcome verification passed. One already-written production proposal completed explicit formatting acceptance and fresh authenticated/public read-back; two other proposals remain pending. Production writes and rollback still require separate per-article approval. See [validation.md](validation.md).
+
+## v0.1.2 baseline
+
 The v0.1.2 patch adds source-owned pipeline inspection and weekly Skill execution with atomic four-call reservations, a shared daily hard cap of ten, cross-process exclusion, unresolved-claim stops, bounded deadlines and a closed private-state report schema. Local checks, 211 tests, Chromium, live read-only inspection and a state-preserving service restart passed. The existing operator automation uses the new commands; article writes and Skill activation remain manual. The first scheduled live weekly Skill run is still pending its future eligibility gates. See [pipeline.md](pipeline.md) and [validation.md](validation.md).
 
 ## v0.1.1 baseline

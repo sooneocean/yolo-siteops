@@ -4,7 +4,7 @@ YOLO SiteOps 是一個 local-first 的 WordPress 營運工作台：先讀取證�
 
 ## 目前狀態
 
-v0.1.2 補齊唯讀分析報告與受限每週 Skill 管線，通過 211 項測試與 Chromium 操作流程，包含跨程序額度競爭及逾時回歸。正式資料庫唯讀檢查與受控重啟均保持紀錄不變；文章仍待逐篇批准，第一輪排程真實 Skill 尚待週一閘門。v0.1.1 的提案修復，以及 v0.1.0 的真實 Codex、隔離 WordPress 寫入／回復、Skill 回放與單篇人工核准正式驗收紀錄仍保留。已驗證的 Codex CLI 為 `0.163.0`。
+v0.1.3 補齊 WordPress 移除段落標記並增加空白行的精確格式核對，將使用者看見的規則、實際內容指紋、接受紀錄與不可變收據完整綁定。通過239項測試、兩個瀏覽器流程及獨立驗證；一篇已寫入文章在另行接受實際格式後完成無再次寫入的驗收，其餘兩篇仍待審。v0.1.2 的受限分析與每週 Skill 管線保持不變，第一輪排程真實 Skill 仍待未來閘門。已驗證的 Codex CLI 為 `0.163.0`。
 
 驗證範圍與限制見 [`docs/validation.md`](docs/validation.md)。這些結果證明已記錄的 MVP 操作流程；排名、流量、CTR、GEO 與 ROI 仍須後續量測。
 
@@ -78,4 +78,4 @@ npm run smoke:codex
 npm run test:wordpress
 ```
 
-`npm run test:e2e` 需要本機已可用的 Playwright Chromium；CI-equivalent Chromium journey 目前仍待重新驗證。上述檢查不會取得 production credentials，也不會部署、發布或變更外部網站。此 repository 不自動部署、不自動發布。
+`npm run test:e2e` 本機預設使用 Chrome，CI 使用 Playwright Chromium，執行環境需已安裝對應瀏覽器。v0.1.3 的兩個本機瀏覽器流程已通過；GitHub CI 會以 Chromium 執行相同測試。上述檢查不會取得 production credentials，也不會部署、發布或變更外部網站。此 repository 不自動部署、不自動發布。

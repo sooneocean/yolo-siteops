@@ -89,6 +89,7 @@ export function createApp(options: CreateAppOptions): express.Express {
     const acceptance = await options.service.acceptReconciliation(
       proposalId(req), sessionId(req), stringField(req.body?.reviewId, 'reviewId'),
       stringField(req.body?.reviewedActualHash, 'reviewedActualHash'),
+      stringField(req.body?.expectedTransform, 'expectedTransform') as import('../../packages/contracts.js').ReconciliationTransform,
     );
     res.status(201).json({ acceptanceId: acceptance.id });
   }));

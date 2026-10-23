@@ -29,13 +29,13 @@ const protectedFields = {
   featured_media: 3, meta: { stable: true },
 };
 
-function setup(actualBodyHtml = 'FirstSecond', publicMatches = true) {
+function setup(actualBodyHtml = 'FirstSecond', publicMatches = true, approvedBodyHtml = '<p>First</p><p>Second</p>') {
   const storage = new SQLiteWriterStorage(store);
   const before: WordPressPostSnapshot = {
     postId: 42, url: 'https://example.test/article/', bodyHtml: '<p>Before</p>', status: 'publish',
     modified: '2026-10-23T00:00:00Z', protectedFields: structuredClone(protectedFields),
   };
-  const afterHtml = '<p>First</p><p>Second</p>';
+  const afterHtml = approvedBodyHtml;
   const proposal: ChangeProposal = {
     id: 'proposal-1', taskId: 'task-1', postId: 42, title: 'Article', url: before.url,
     beforeHtml: before.bodyHtml, afterHtml, summary: 'Update', evidenceIds: ['e-1'],
@@ -69,12 +69,158 @@ function setup(actualBodyHtml = 'FirstSecond', publicMatches = true) {
   return { storage, proposal, backup, originalReceipt, actual, adapter, writer, get updates() { return updates; }, setNow(value: string) { now = new Date(value); } };
 }
 
+function seedRecoveryState(fixture: ReturnType<typeof setup>) {
+  const snapshot: Snapshot = {
+    id: 'double-lf-snapshot', createdAt: '2026-10-22T00:00:00Z', mode: 'live',
+    evidence: [{
+      id: 'double-lf-gsc', source: 'gsc', property: 'https://example.test', startDate: '2026-09-24', endDate: '2026-10-21',
+      timeZone: 'America/Los_Angeles', fetchedAt: '2026-10-22T00:00:00Z', complete: true, coverage: 'test',
+    }],
+    pages: [{
+      postId: fixture.proposal.postId, url: fixture.proposal.url, title: fixture.proposal.title,
+      bodyHtml: fixture.actual.bodyHtml, status: fixture.actual.status, modified: fixture.actual.modified,
+      protectedHash: hashPostState(fixture.actual),
+    }],
+    search: [],
+    pageMetrics: [{ postId: fixture.proposal.postId, clicks: 12, previousClicks: 18, impressions: 200, position: 7, evidenceId: 'double-lf-gsc' }],
+    analytics: [{ postId: fixture.proposal.postId, sessions: 9, engagedSessions: 5, measurementValid: true, evidenceId: 'double-lf-ga' }],
+    warnings: [],
+  };
+  const task: Task = {
+    id: fixture.proposal.taskId, postId: fixture.proposal.postId, title: fixture.proposal.title,
+    status: 'review_required', stage: 'Write outcome requires manual review.',
+    createdAt: fixture.proposal.createdAt, updatedAt: fixture.proposal.createdAt,
+    skillVersion: 'skill-v1', snapshotId: snapshot.id, proposalId: fixture.proposal.id, error: fixture.proposal.error,
+  };
+  store.put('snapshot', snapshot.id, snapshot);
+  store.put('snapshot', 'current', snapshot);
+  store.put('task', task.id, task);
+  const skill = { id: 'skill-v1', version: 1, content: 'test', status: 'active' as const, createdAt: snapshot.createdAt, rationale: 'test' };
+  const agent: AgentAdapter = { async run() { throw new Error('not used'); } };
+  return () => new SiteOpsService({
+    mode: 'live', siteUrl: 'https://example.test', store,
+    provider: { async check() { throw new Error('not used'); }, async sync() { throw new Error('not used'); } },
+    wordpress: fixture.adapter, writerStorage: fixture.storage, writer: fixture.writer,
+    agent, agentMode: 'codex', skills: { list: () => [skill], active: () => skill },
+    now: () => new Date('2026-10-24T00:00:00Z'),
+  });
+}
+
 describe('review-required reconciliation', () => {
+  it('accepts the exact double-LF transform across a restarted session and records typed immutable bindings', async () => {
+    const approved = Array.from({ length: 27 }, (_, index) => `<p>Line ${index + 1}</p>`).join('\n');
+    const actual = approved.replace(/<\/?p>/g, '').replace(/\n/g, '\n\n');
+    const fixture = setup(actual, true, approved);
+    fixture.originalReceipt.sessionId = 'prior-session';
+    await fixture.storage.putReceipt(fixture.originalReceipt);
+
+    const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'fresh-session' });
+    expect(review.transform).toBe('strip_bare_p_double_lf_v1');
+    const acceptance = await fixture.writer.acceptReconciliation({
+      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash,
+      sessionId: 'fresh-session', expectedTransform: 'strip_bare_p_double_lf_v1',
+    });
+    expect(acceptance.reviewId).toBe(review.id);
+    const receipt = await fixture.writer.reconcile({
+      proposalId: fixture.proposal.id, acceptanceId: acceptance.id, sessionId: 'fresh-session',
+    });
+
+    expect(receipt).toMatchObject({
+      reconciliationTransform: 'strip_bare_p_double_lf_v1', beforeHash: fixture.proposal.patchHash,
+      afterHash: review.reviewedActualHash,
+    });
+    expect(await fixture.writer.reconcile({
+      proposalId: fixture.proposal.id, acceptanceId: acceptance.id, sessionId: 'fresh-session',
+    })).toEqual(receipt);
+    expect(await fixture.storage.getReceipt('apply', fixture.proposal.id)).toEqual(fixture.originalReceipt);
+    expect(fixture.updates).toBe(0);
+
+    const legacyLikeReceipt = { ...receipt };
+    delete legacyLikeReceipt.reconciliationTransform;
+    await fixture.storage.putReceipt(legacyLikeReceipt);
+    await expect(fixture.writer.reconcile({
+      proposalId: fixture.proposal.id, acceptanceId: acceptance.id, sessionId: 'fresh-session',
+    })).rejects.toMatchObject({ code: 'reconciliation_replay_conflict' });
+  });
+
+  it('requires expectedTransform to match the reviewed transform without consuming an acceptance', async () => {
+    const approved = '<p>One</p>\n<p>Two</p>';
+    const fixture = setup('One\n\nTwo', true, approved);
+    const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
+    await expect(fixture.writer.acceptReconciliation({
+      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash,
+      sessionId: 'session-1', expectedTransform: 'strip_bare_p_v1',
+    })).rejects.toMatchObject({ code: 'invalid_reconciliation_review' });
+    expect(store.list('writer_reconciliation_acceptance')).toHaveLength(0);
+    expect(fixture.updates).toBe(0);
+  });
+
+  it.each(['acceptance', 'review'] as const)(
+    'rejects a supported cross-transform tamper in the stored %s without consuming the acceptance',
+    async (target) => {
+      const approved = '<p>One</p>\n<p>Two</p>';
+      const fixture = setup('One\n\nTwo', true, approved);
+      const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
+      const acceptance = await fixture.writer.acceptReconciliation({
+        proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash,
+        sessionId: 'session-1', expectedTransform: review.transform,
+      });
+      if (target === 'acceptance') {
+        store.put('writer_reconciliation_acceptance', acceptance.id, { ...acceptance, transform: 'strip_bare_p_v1' });
+      } else {
+        store.put('writer_reconciliation_review', review.id, { ...review, transform: 'strip_bare_p_v1' });
+      }
+
+      await expect(fixture.writer.reconcile({
+        proposalId: fixture.proposal.id, acceptanceId: acceptance.id, sessionId: 'session-1',
+      })).rejects.toMatchObject({ code: 'invalid_reconciliation_acceptance' });
+      expect((await fixture.storage.getReconciliationAcceptance(acceptance.id))?.consumedAt).toBeUndefined();
+      expect(await fixture.storage.getReceipt('reconcile', fixture.proposal.id)).toBeUndefined();
+      expect(fixture.updates).toBe(0);
+    },
+  );
+
+  it.each(['acceptance', 'review', 'receipt', 'proposal'] as const)(
+    'fails fresh typed double-LF repair when the stored %s transform is changed to supported v1',
+    async (target) => {
+      const approved = '<p>One</p>\n<p>Two</p>';
+      const fixture = setup('One\n\nTwo', true, approved);
+      const makeService = seedRecoveryState(fixture);
+      const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
+      const acceptance = await fixture.writer.acceptReconciliation({
+        proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash,
+        sessionId: 'session-1', expectedTransform: review.transform,
+      });
+      const receipt = await fixture.writer.reconcile({
+        proposalId: fixture.proposal.id, acceptanceId: acceptance.id, sessionId: 'session-1',
+      });
+      await makeService().initialize();
+      expect(store.get<Experiment>('experiment', fixture.proposal.id)).toBeDefined();
+      store.remove('experiment', fixture.proposal.id);
+
+      if (target === 'acceptance') {
+        const stored = (await fixture.storage.getReconciliationAcceptance(acceptance.id))!;
+        store.put('writer_reconciliation_acceptance', acceptance.id, { ...stored, transform: 'strip_bare_p_v1' });
+      } else if (target === 'review') {
+        store.put('writer_reconciliation_review', review.id, { ...review, transform: 'strip_bare_p_v1' });
+      } else if (target === 'receipt') {
+        await fixture.storage.putReceipt({ ...receipt, reconciliationTransform: 'strip_bare_p_v1' });
+      } else {
+        const proposal = (await fixture.storage.getProposal(fixture.proposal.id))!;
+        await fixture.storage.saveProposal({ ...proposal, reconciliationTransform: 'strip_bare_p_v1' });
+      }
+
+      await expect(makeService().initialize()).rejects.toMatchObject({ code: 'reconciliation_repair_conflict' });
+      expect(store.get<Experiment>('experiment', fixture.proposal.id)).toBeUndefined();
+      expect(fixture.updates).toBe(0);
+    },
+  );
+
   it('explicitly accepts an exact bare-p transformation without another WordPress write and replays its receipt', async () => {
     const fixture = setup();
     const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
     const acceptance = await fixture.writer.acceptReconciliation({
-      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1',
+      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1', expectedTransform: review.transform,
     });
     const receipt = await fixture.writer.reconcile({ proposalId: fixture.proposal.id, acceptanceId: acceptance.id, sessionId: 'session-1' });
 
@@ -110,8 +256,20 @@ describe('review-required reconciliation', () => {
     const fixture = setup();
     const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
     await expect(fixture.writer.acceptReconciliation({
-      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: 'wrong', sessionId: 'session-1',
+      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: 'wrong', sessionId: 'session-1', expectedTransform: review.transform,
     })).rejects.toMatchObject({ code: 'invalid_reconciliation_review' });
+  });
+
+  it('rejects a stored review whose exact actual body was changed before acceptance', async () => {
+    const fixture = setup();
+    const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
+    store.put('writer_reconciliation_review', review.id, { ...review, actualBodyHtml: `${review.actualBodyHtml}!` });
+    await expect(fixture.writer.acceptReconciliation({
+      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash,
+      sessionId: 'session-1', expectedTransform: review.transform,
+    })).rejects.toMatchObject({ code: 'invalid_reconciliation_review' });
+    expect(store.list('writer_reconciliation_acceptance')).toHaveLength(0);
+    expect(fixture.updates).toBe(0);
   });
 
   it.each([
@@ -131,10 +289,10 @@ describe('review-required reconciliation', () => {
     const fixture = setup();
     const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
     await expect(fixture.writer.acceptReconciliation({
-      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-2',
+      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-2', expectedTransform: review.transform,
     })).rejects.toMatchObject({ code: 'invalid_reconciliation_review' });
     const acceptance = await fixture.writer.acceptReconciliation({
-      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1',
+      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1', expectedTransform: review.transform,
     });
     await expect(fixture.writer.reconcile({
       proposalId: fixture.proposal.id, acceptanceId: acceptance.id, sessionId: 'session-2',
@@ -143,7 +301,7 @@ describe('review-required reconciliation', () => {
     await fixture.storage.putReceipt({ ...fixture.originalReceipt, id: 'replaced-receipt' });
     await expect(fixture.writer.reconcile({
       proposalId: fixture.proposal.id, acceptanceId: acceptance.id, sessionId: 'session-1',
-    })).rejects.toThrow('Reconciliation acceptance bindings are no longer valid');
+    })).rejects.toMatchObject({ code: 'invalid_reconciliation_acceptance' });
     expect((await fixture.storage.getReconciliationAcceptance(acceptance.id))?.consumedAt).toBeUndefined();
     expect(await fixture.storage.getReceipt('reconcile', fixture.proposal.id)).toBeUndefined();
     expect(fixture.updates).toBe(0);
@@ -153,7 +311,7 @@ describe('review-required reconciliation', () => {
     const fixture = setup();
     const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
     const acceptance = await fixture.writer.acceptReconciliation({
-      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1',
+      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1', expectedTransform: review.transform,
     });
     store.put('writer_reconciliation_acceptance', acceptance.id, { ...acceptance, transform: 'unknown_transform' });
     await expect(fixture.writer.reconcile({
@@ -168,7 +326,7 @@ describe('review-required reconciliation', () => {
     const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
     const acceptance = await fixture.writer.acceptReconciliation({
       proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash,
-      sessionId: 'session-1', expiresInMs: 1_000,
+      sessionId: 'session-1', expectedTransform: review.transform, expiresInMs: 1_000,
     });
     fixture.setNow('2026-10-23T00:03:01Z');
     await expect(fixture.writer.reconcile({ proposalId: fixture.proposal.id, acceptanceId: acceptance.id, sessionId: 'session-1' }))
@@ -179,7 +337,7 @@ describe('review-required reconciliation', () => {
     const fixture = setup();
     const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
     const acceptance = await fixture.writer.acceptReconciliation({
-      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1',
+      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1', expectedTransform: review.transform,
     });
     fixture.actual.bodyHtml = `${fixture.actual.bodyHtml}!`;
     await expect(fixture.writer.reconcile({
@@ -193,7 +351,7 @@ describe('review-required reconciliation', () => {
     const fixture = setup();
     const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
     const acceptance = await fixture.writer.acceptReconciliation({
-      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1',
+      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1', expectedTransform: review.transform,
     });
     const originalPut = store.put.bind(store);
     store.put = ((kind: string, id: string, value: unknown) => {
@@ -212,7 +370,7 @@ describe('review-required reconciliation', () => {
     const fixture = setup();
     const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
     const acceptance = await fixture.writer.acceptReconciliation({
-      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1',
+      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1', expectedTransform: review.transform,
     });
     store.db.exec(`CREATE TRIGGER fail_reconcile_receipt BEFORE INSERT ON records
       WHEN NEW.kind='writer_receipt' AND NEW.id='reconcile:proposal-1'
@@ -229,7 +387,7 @@ describe('review-required reconciliation', () => {
     const fixture = setup();
     const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
     const acceptance = await fixture.writer.acceptReconciliation({
-      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1',
+      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1', expectedTransform: review.transform,
     });
     const originalPut = store.put.bind(store);
     store.put = ((kind: string, id: string, value: unknown) => {
@@ -247,7 +405,7 @@ describe('review-required reconciliation', () => {
     const fixture = setup();
     const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
     const acceptance = await fixture.writer.acceptReconciliation({
-      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1',
+      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1', expectedTransform: review.transform,
     });
     await fixture.writer.reconcile({ proposalId: fixture.proposal.id, acceptanceId: acceptance.id, sessionId: 'session-1' });
     const rollbackApproval = await fixture.writer.approveRollback({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
@@ -290,7 +448,7 @@ describe('review-required reconciliation', () => {
     store.put('task', task.id, task);
     const review = await fixture.writer.prepareReconciliation({ proposalId: fixture.proposal.id, sessionId: 'session-1' });
     const acceptance = await fixture.writer.acceptReconciliation({
-      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1',
+      proposalId: fixture.proposal.id, reviewId: review.id, reviewedActualHash: review.reviewedActualHash, sessionId: 'session-1', expectedTransform: review.transform,
     });
     const receipt = await fixture.writer.reconcile({
       proposalId: fixture.proposal.id, acceptanceId: acceptance.id, sessionId: 'session-1',
@@ -315,6 +473,17 @@ describe('review-required reconciliation', () => {
       expectedPostHash: review.reviewedActualHash, baselineClicks: 12, baselineSessions: 9,
       startDate: '2026-10-23', status: 'observing',
     });
+    const legacyReceipt = structuredClone(receipt);
+    delete legacyReceipt.reconciliationTransform;
+    await fixture.storage.putReceipt(legacyReceipt);
+    const legacyProposal = structuredClone((await fixture.storage.getProposal(fixture.proposal.id))!);
+    delete legacyProposal.reconciliationReviewId;
+    delete legacyProposal.reconciliationAcceptanceId;
+    await fixture.storage.saveProposal(legacyProposal);
+    await service.initialize();
+    expect(await fixture.writer.reconcile({
+      proposalId: fixture.proposal.id, acceptanceId: acceptance.id, sessionId: 'session-1',
+    })).toEqual(legacyReceipt);
     const beforeReplay = {
       proposal: JSON.stringify(await fixture.storage.getProposal(fixture.proposal.id)),
       task: JSON.stringify(store.get<Task>('task', task.id)),
@@ -411,7 +580,7 @@ describe('reconciliation HTTP boundary', () => {
       });
       expect((await request('/api/proposals/proposal-1/reconcile-prepare')).status).toBe(200);
       expect((await request('/api/proposals/proposal-1/reconcile-accept', {
-        reviewId: 'review-1', reviewedActualHash: 'a'.repeat(64),
+        reviewId: 'review-1', reviewedActualHash: 'a'.repeat(64), expectedTransform: 'strip_bare_p_v1',
       })).status).toBe(201);
       expect((await request('/api/proposals/proposal-1/reconcile', { acceptanceId: 'acceptance-1' })).status).toBe(200);
       expect(calls).toHaveLength(3);
