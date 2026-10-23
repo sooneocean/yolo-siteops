@@ -1,0 +1,47 @@
+{
+  "name": "yolo-siteops",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first WordPress operations with evidence, Codex, and human-approved changes",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=22.13 <23 || >=24" },
+  "scripts": {
+    "dev": "tsx apps/server/index.ts",
+    "demo": "npm run build && node dist/server/apps/server/index.js",
+    "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
+    "start": "node dist/server/apps/server/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:wordpress": "tsx scripts/wordpress-e2e.ts",
+    "check": "npm run lint && npm run build && npm test",
+    "smoke:codex": "tsx scripts/codex-smoke.ts",
+    "check:release": "tsx scripts/check-release.ts"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "sanitize-html": "^2.17.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@playwright/test": "^1.56.0",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/sanitize-html": "^2.16.0",
+    "@vitejs/plugin-react": "^4.5.0",
+    "eslint": "^9.39.0",
+    "globals": "^16.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.46.0",
+    "vite": "^6.4.0",
+    "vitest": "4.1.12"
+  }
+}

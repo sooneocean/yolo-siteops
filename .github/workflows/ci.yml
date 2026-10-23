@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.1
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run check:release
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
+  wordpress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SITEOPS_DOCKER_CONTEXT: default
+      SITEOPS_TEST_AGENT: demo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.1
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run test:wordpress

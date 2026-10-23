@@ -1,0 +1,9 @@
+{
+  "siteUrl": "https://your-wordpress-origin.example",
+  "username": "wordpress-user",
+  "appPassword": "stored-outside-repository",
+  "gscSiteUrl": "sc-domain:your-site.example",
+  "ga4PropertyId": "properties/000000000",
+  "googleServiceAccountKeyPath": "/private/path/google-service-account.json",
+  "writerLockPath": "/private/path/siteops-writer.lock"
+}

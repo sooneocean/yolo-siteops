@@ -1,0 +1,45 @@
+services:
+  database:
+    image: mariadb:11.4
+    environment:
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: ${SITEOPS_TEST_DB_PASSWORD:?ephemeral password required}
+      MARIADB_RANDOM_ROOT_PASSWORD: '1'
+    healthcheck:
+      test: [CMD, healthcheck.sh, --connect, --innodb_initialized]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    volumes: [database:/var/lib/mysql]
+  wordpress:
+    image: wordpress:7.1.3-php8.3-apache
+    depends_on:
+      database: {condition: service_healthy}
+    ports: ['127.0.0.1:${SITEOPS_TEST_WP_PORT:-18180}:80']
+    environment: &wordpress_environment
+      WORDPRESS_DB_HOST: database
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: ${SITEOPS_TEST_DB_PASSWORD:?ephemeral password required}
+      WORDPRESS_DB_NAME: wordpress
+      WORDPRESS_CONFIG_EXTRA: |
+        define('WP_HOME', 'https://siteops-wp.test');
+        define('WP_SITEURL', 'https://siteops-wp.test');
+        if (isset($$_SERVER['HTTP_X_FORWARDED_PROTO']) && $$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
+          $$_SERVER['HTTPS'] = 'on';
+          $$_SERVER['SERVER_PORT'] = 443;
+        }
+        define('DISABLE_WP_CRON', true);
+    volumes: [wordpress:/var/www/html]
+  cli:
+    image: wordpress:cli-2.12.0-php8.3
+    user: '33:33'
+    environment: *wordpress_environment
+    volumes: [wordpress:/var/www/html]
+    profiles: [tools]
+volumes:
+  database:
+  wordpress:
+networks:
+  default:
+    internal: true

@@ -1,0 +1,21 @@
+export type Mode = 'demo' | 'live';
+export type ConnectionId = 'wordpress' | 'gsc' | 'ga4' | 'codex';
+export interface Connection { id: ConnectionId; label: string; status: 'ready' | 'unconfigured' | 'error' | 'checking'; checkedAt?: string; message: string; }
+export interface Evidence { id: string; source: 'gsc' | 'ga4' | 'wordpress'; property: string; startDate: string; endDate: string; timeZone: string; fetchedAt: string; complete: boolean; coverage: string; }
+export interface PageRecord { postId: number; url: string; title: string; bodyHtml: string; status: string; modified: string; protectedHash: string; }
+export interface SearchRow { postId: number; query: string; clicks: number; impressions: number; position: number; previousClicks: number; evidenceId: string; }
+export type SearchPageRow = Omit<SearchRow, 'query'>;
+export interface AnalyticsRow { postId: number; sessions: number; engagedSessions: number; measurementValid: boolean; evidenceId: string; }
+export interface Snapshot { id: string; createdAt: string; mode: Mode; evidence: Evidence[]; pages: PageRecord[]; search: SearchRow[]; pageMetrics?: SearchPageRow[]; analytics: AnalyticsRow[]; warnings: string[]; }
+export interface Opportunity { id: string; postId: number; title: string; url: string; kind: 'decay' | 'position'; clicks: number; previousClicks: number; impressions: number; position: number; queries: string[]; evidenceIds: string[]; quality: 'available' | 'unknown'; engagementRate?: number; reason: string; audienceHypothesis: string; keywordHypotheses: string[]; }
+export type TaskStatus = 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled' | 'review_required';
+export interface Task { id: string; postId: number; title: string; status: TaskStatus; stage: string; createdAt: string; updatedAt: string; skillVersion: string; snapshotId: string; error?: string; proposalId?: string; }
+export interface TaskEvent { sequence: number; taskId: string; at: string; type: string; message: string; }
+export interface ChangeProposal { id: string; taskId: string; postId: number; title: string; url: string; beforeHtml: string; afterHtml: string; summary: string; evidenceIds: string[]; baseHash: string; patchHash: string; status: 'pending' | 'approved' | 'rejected' | 'applied' | 'rolled_back' | 'review_required'; createdAt: string; appliedAt?: string; afterHash?: string; error?: string; }
+export interface Experiment { id: string; proposalId: string; postId: number; startDate: string; dueDate: string; status: 'observing' | 'insufficient' | 'confounded' | 'measured'; baselineClicks: number; currentClicks?: number; baselineSessions?: number; currentSessions?: number; baselineEvidence?: Evidence; measuredEvidence?: Evidence; expectedPostHash?: string; note: string; }
+export interface SkillVersion { id: string; version: number; content: string; status: 'candidate' | 'evaluated' | 'active' | 'retired'; createdAt: string; evaluation?: { passed: boolean; cases: number; failures: string[] }; rationale: string; }
+export interface Settings { timezone: 'Asia/Taipei'; scheduleEnabled: boolean; dailyTime: string; weeklyTime: string; maxOpportunities: number; maxWeeklyProposals: number; maxPendingTasks: number; maxAgentRunsPerDay: number; lastDailyRun?: string; lastWeeklyRun?: string; }
+export interface AppState { mode: Mode; siteUrl: string; connections: Connection[]; snapshot?: Snapshot; opportunities: Opportunity[]; tasks: Task[]; proposals: ChangeProposal[]; experiments: Experiment[]; skills: SkillVersion[]; settings: Settings; }
+export interface AgentInput { page: PageRecord; opportunity: Opportunity; evidence: Evidence[]; relatedPages: Array<Pick<PageRecord, 'postId' | 'url' | 'title'>>; skillContent: string; skillVersion: string; }
+export interface AgentResult { bodyHtml: string; summary: string; evidenceIds: string[]; skillVersion: string; }
+export interface AgentAdapter { run(args: { taskId: string; input: AgentInput; signal: AbortSignal; onEvent: (type: string, message: string) => void }): Promise<AgentResult>; }

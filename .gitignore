@@ -1,0 +1,16 @@
+node_modules/
+.playwright-cli/
+dist/
+.siteops/
+.env
+.env.*
+!.env.example
+work/
+output/
+playwright-report/
+test-results/
+coverage/
+*.sqlite*
+*.db*
+*.tsbuildinfo
+.DS_Store
